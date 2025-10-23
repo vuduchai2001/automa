@@ -16,8 +16,14 @@ import BackgroundEventsListeners from './BackgroundEventsListeners';
 import BackgroundOffscreen from './BackgroundOffscreen';
 import BackgroundUtils from './BackgroundUtils';
 import BackgroundWorkflowUtils from './BackgroundWorkflowUtils';
+import BackgroundWebSocket from './BackgroundWebSocket';
 
 BackgroundOffscreen.instance.sendMessage('halo');
+
+// ═══════════════════════════════════════════════════
+// INITIALIZE WEBSOCKET SERVICE
+// ═══════════════════════════════════════════════════
+BackgroundWebSocket.instance.init();
 
 browser.alarms.onAlarm.addListener(BackgroundEventsListeners.onAlarms);
 
@@ -205,6 +211,47 @@ message.on('workflow:breakpoint', (id) => {
   BackgroundWorkflowUtils.instance.updateExecutionState(id, {
     status: 'breakpoint',
   });
+});
+
+// ═══════════════════════════════════════════════════
+// WEBSOCKET MESSAGE HANDLERS
+// ═══════════════════════════════════════════════════
+message.on('websocket:enable', async ({ url, authToken }) => {
+  await browser.storage.local.set({
+    wsConfig: {
+      enabled: true,
+      url,
+      authToken,
+    },
+  });
+
+  await BackgroundWebSocket.instance.reconnect();
+
+  return { success: true };
+});
+
+message.on('websocket:disable', async () => {
+  await browser.storage.local.set({
+    wsConfig: {
+      enabled: false,
+    },
+  });
+
+  BackgroundWebSocket.instance.disconnect();
+
+  return { success: true };
+});
+
+message.on('websocket:get-status', () => {
+  return {
+    connected: BackgroundWebSocket.instance.isConnected,
+    reconnectAttempts: BackgroundWebSocket.instance.reconnectAttempts,
+  };
+});
+
+message.on('websocket:reconnect', async () => {
+  await BackgroundWebSocket.instance.reconnect();
+  return { success: true };
 });
 
 message.on('get:user-id', async () => {

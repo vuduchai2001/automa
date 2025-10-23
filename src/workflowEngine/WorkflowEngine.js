@@ -307,6 +307,8 @@ class WorkflowEngine {
 
       this.addRefDataSnapshot('variables');
 
+      console.log('this.state', this.state);
+
       await this.states.add(this.id, {
         id: this.id,
         status: 'running',

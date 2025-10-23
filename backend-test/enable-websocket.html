@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enable WebSocket - Automa Extension</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 600;
+      color: #666;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    button {
+      background: #3B82F6;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      margin-right: 10px;
+    }
+    button:hover {
+      background: #2563EB;
+    }
+    button.secondary {
+      background: #6B7280;
+    }
+    button.secondary:hover {
+      background: #4B5563;
+    }
+    button.success {
+      background: #10B981;
+    }
+    button.danger {
+      background: #EF4444;
+    }
+    .status {
+      margin-top: 20px;
+      padding: 15px;
+      border-radius: 4px;
+      display: none;
+    }
+    .status.success {
+      background: #D1FAE5;
+      color: #065F46;
+      display: block;
+    }
+    .status.error {
+      background: #FEE2E2;
+      color: #991B1B;
+      display: block;
+    }
+    .status.info {
+      background: #DBEAFE;
+      color: #1E3A8A;
+      display: block;
+    }
+    code {
+      background: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+    }
+    .instructions {
+      margin-top: 30px;
+      padding: 15px;
+      background: #FEF3C7;
+      border-left: 4px solid #F59E0B;
+      border-radius: 4px;
+    }
+    .instructions h3 {
+      margin-top: 0;
+      color: #92400E;
+    }
+    .instructions p {
+      color: #78350F;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔌 Enable WebSocket Connection</h1>
+    <p>Configure Automa extension to connect to your WebSocket server.</p>
+
+    <div class="form-group">
+      <label>WebSocket URL</label>
+      <input type="text" id="wsUrl" value="ws://localhost:8000" placeholder="ws://localhost:8000">
+    </div>
+
+    <div class="form-group">
+      <label>Auth Token</label>
+      <input type="text" id="authToken" value="test-token-12345" placeholder="test-token-12345">
+    </div>
+
+    <div style="margin-top: 20px;">
+      <button onclick="enableWebSocket()">Enable WebSocket</button>
+      <button class="secondary" onclick="checkStatus()">Check Status</button>
+      <button class="success" onclick="reconnect()">Reconnect</button>
+      <button class="danger" onclick="disableWebSocket()">Disable</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="instructions">
+      <h3>⚠️ Important</h3>
+      <p><strong>1.</strong> Make sure WebSocket server is running: <code>node backend-test/server.js</code></p>
+      <p><strong>2.</strong> Open this page in the same browser where Automa extension is installed</p>
+      <p><strong>3.</strong> Check the dashboard at <a href="http://localhost:8000" target="_blank">http://localhost:8000</a> to see if extension is connected</p>
+    </div>
+  </div>
+
+  <script>
+    function showStatus(message, type = 'info') {
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = message;
+      statusEl.className = `status ${type}`;
+    }
+
+    async function sendMessage(name, data) {
+      try {
+        if (typeof chrome === 'undefined' || !chrome.runtime) {
+          throw new Error('Chrome extension API not available. Make sure you are accessing this page from a browser with Automa extension installed.');
+        }
+
+        const result = await chrome.runtime.sendMessage({
+          name: `background--${name}`,
+          data: data
+        });
+
+        return result;
+      } catch (error) {
+        console.error('Error:', error);
+        throw error;
+      }
+    }
+
+    async function enableWebSocket() {
+      const url = document.getElementById('wsUrl').value;
+      const authToken = document.getElementById('authToken').value;
+
+      if (!url) {
+        showStatus('❌ Please enter WebSocket URL', 'error');
+        return;
+      }
+
+      try {
+        showStatus('⏳ Enabling WebSocket...', 'info');
+        
+        const result = await sendMessage('websocket:enable', {
+          url: url,
+          authToken: authToken
+        });
+
+        if (result.success) {
+          showStatus('✅ WebSocket enabled! Extension will now connect to ' + url, 'success');
+          
+          // Check status after 2 seconds
+          setTimeout(checkStatus, 2000);
+        } else {
+          showStatus('❌ Failed to enable WebSocket', 'error');
+        }
+      } catch (error) {
+        showStatus('❌ Error: ' + error.message, 'error');
+      }
+    }
+
+    async function disableWebSocket() {
+      try {
+        showStatus('⏳ Disabling WebSocket...', 'info');
+        
+        const result = await sendMessage('websocket:disable', {});
+
+        if (result.success) {
+          showStatus('✅ WebSocket disabled', 'success');
+        } else {
+          showStatus('❌ Failed to disable WebSocket', 'error');
+        }
+      } catch (error) {
+        showStatus('❌ Error: ' + error.message, 'error');
+      }
+    }
+
+    async function checkStatus() {
+      try {
+        showStatus('⏳ Checking status...', 'info');
+        
+        const status = await sendMessage('websocket:get-status', {});
+
+        if (status.connected) {
+          showStatus(`✅ Connected! (Reconnect attempts: ${status.reconnectAttempts || 0})`, 'success');
+        } else {
+          showStatus(`⚠️ Not connected. Reconnect attempts: ${status.reconnectAttempts || 0}`, 'error');
+        }
+      } catch (error) {
+        showStatus('❌ Error: ' + error.message, 'error');
+      }
+    }
+
+    async function reconnect() {
+      try {
+        showStatus('⏳ Reconnecting...', 'info');
+        
+        const result = await sendMessage('websocket:reconnect', {});
+
+        if (result.success) {
+          showStatus('✅ Reconnect initiated', 'success');
+          
+          // Check status after 2 seconds
+          setTimeout(checkStatus, 2000);
+        } else {
+          showStatus('❌ Failed to reconnect', 'error');
+        }
+      } catch (error) {
+        showStatus('❌ Error: ' + error.message, 'error');
+      }
+    }
+
+    // Auto-check status on page load
+    setTimeout(() => {
+      checkStatus().catch(() => {
+        showStatus('⚠️ Extension not detected. Make sure Automa extension is installed.', 'error');
+      });
+    }, 500);
+  </script>
+</body>
+</html>
+
