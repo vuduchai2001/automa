@@ -25,6 +25,22 @@ BackgroundOffscreen.instance.sendMessage('halo');
 // ═══════════════════════════════════════════════════
 BackgroundWebSocket.instance.init();
 
+// ═══════════════════════════════════════════════════
+// CLEANUP OFFScreen DOCUMENT ON STARTUP
+// ═══════════════════════════════════════════════════
+(async () => {
+  try {
+    // Close any existing offscreen document to prevent conflicts
+    await BackgroundOffscreen.instance.closeDocument();
+    console.log('[Background] Offscreen document cleanup completed');
+  } catch (error) {
+    console.log(
+      '[Background] Offscreen document cleanup failed (this is normal):',
+      error.message
+    );
+  }
+})();
+
 browser.alarms.onAlarm.addListener(BackgroundEventsListeners.onAlarms);
 
 browser.commands.onCommand.addListener(BackgroundEventsListeners.onCommand);
@@ -39,6 +55,29 @@ browser.runtime.onStartup.addListener(
 browser.runtime.onInstalled.addListener(
   BackgroundEventsListeners.onRuntimeInstalled
 );
+
+// ═══════════════════════════════════════════════════
+// WEBSOCKET AUTO-RECONNECT ON STARTUP
+// ═══════════════════════════════════════════════════
+browser.runtime.onStartup.addListener(() => {
+  console.log('[Background] Browser startup - reinitializing WebSocket');
+  // Only reconnect if not already connected
+  if (!BackgroundWebSocket.instance.isConnected) {
+    BackgroundWebSocket.instance.init();
+  }
+});
+
+browser.runtime.onInstalled.addListener((details) => {
+  if (details.reason === 'install' || details.reason === 'update') {
+    console.log(
+      '[Background] Extension installed/updated - initializing WebSocket'
+    );
+    // Only reconnect if not already connected
+    if (!BackgroundWebSocket.instance.isConnected) {
+      BackgroundWebSocket.instance.init();
+    }
+  }
+});
 
 browser.webNavigation.onCompleted.addListener(
   BackgroundEventsListeners.onWebNavigationCompleted

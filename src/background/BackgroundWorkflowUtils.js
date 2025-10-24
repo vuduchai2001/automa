@@ -130,10 +130,37 @@ class BackgroundWorkflowUtils {
       return;
     }
 
-    await BackgroundOffscreen.instance.sendMessage('workflow:execute', {
-      workflow: workflowData,
-      options,
-    });
+    try {
+      await BackgroundOffscreen.instance.sendMessage('workflow:execute', {
+        workflow: workflowData,
+        options,
+      });
+    } catch (error) {
+      console.error(
+        '[BackgroundWorkflowUtils] Error executing workflow:',
+        error
+      );
+
+      // If offscreen document error, try to recreate it
+      if (error.message && error.message.includes('offscreen document')) {
+        console.log(
+          '[BackgroundWorkflowUtils] Attempting to recreate offscreen document...'
+        );
+        try {
+          await BackgroundOffscreen.instance.recreateDocument();
+          // Retry execution
+          await BackgroundOffscreen.instance.sendMessage('workflow:execute', {
+            workflow: workflowData,
+            options,
+          });
+        } catch (retryError) {
+          console.error('[BackgroundWorkflowUtils] Retry failed:', retryError);
+          throw retryError;
+        }
+      } else {
+        throw error;
+      }
+    }
   }
 }
 

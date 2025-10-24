@@ -259,8 +259,9 @@ function runWorkflow(index, { data, params }) {
   /* eslint-disable-next-line */
   const isParamsValid = isValidParams(params);
   if (!isParamsValid) return;
-
+  console.log('🚀 ~ runWorkflow ~ params:', params);
   const variables = getParamsValues(params);
+  console.log('🚀 ~ runWorkflow ~ variables:', variables);
   let payload = {
     name: 'background--workflow:execute',
     data: {

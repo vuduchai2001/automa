@@ -1,6 +1,7 @@
 import browser from 'webextension-polyfill';
 import { nanoid } from 'nanoid';
 import BackgroundWorkflowUtils from './BackgroundWorkflowUtils';
+import { getWebSocketConfig } from './WebSocketConfig';
 
 /**
  * WebSocket Service for receiving workflow execution requests from external backend
@@ -40,6 +41,13 @@ class BackgroundWebSocket {
    * Initialize WebSocket connection
    */
   async init() {
+    // Prevent multiple simultaneous initializations
+    if (this._initializing) {
+      return;
+    }
+
+    this._initializing = true;
+
     try {
       // Get or create installation ID
       const { installationId } = await browser.storage.local.get(
@@ -57,7 +65,24 @@ class BackgroundWebSocket {
       // Get WebSocket config from storage
       const { wsConfig } = await browser.storage.local.get('wsConfig');
 
-      if (!wsConfig || !wsConfig.enabled) {
+      // Auto-enable WebSocket if not configured
+      if (!wsConfig) {
+        console.log(
+          '[WebSocket] No config found, setting up default configuration'
+        );
+        await this.setupDefaultConfig();
+        // Get config again after setup
+        const { wsConfig: newConfig } = await browser.storage.local.get(
+          'wsConfig'
+        );
+        if (newConfig && newConfig.enabled && newConfig.url) {
+          this.connect(newConfig.url, newConfig.authToken);
+        }
+        return;
+      }
+
+      if (!wsConfig.enabled) {
+        console.log('[WebSocket] WebSocket disabled in settings');
         return;
       }
 
@@ -67,10 +92,22 @@ class BackgroundWebSocket {
         return;
       }
 
+      console.log('[WebSocket] Auto-connecting to:', url);
       this.connect(url, authToken);
     } catch (error) {
       console.error('[WebSocket] Failed to initialize:', error);
+    } finally {
+      this._initializing = false;
     }
+  }
+
+  /**
+   * Setup default WebSocket configuration
+   */
+  async setupDefaultConfig() {
+    const defaultConfig = getWebSocketConfig();
+    await browser.storage.local.set({ wsConfig: defaultConfig });
+    console.log('[WebSocket] Default configuration set:', defaultConfig);
   }
 
   /**
