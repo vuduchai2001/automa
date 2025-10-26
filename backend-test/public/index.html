@@ -1,503 +1,868 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Automa WebSocket Server - Test Dashboard</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automa WebSocket Test Interface</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      background: #f5f5f5;
-      padding: 20px;
-    }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
 
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
 
-    header {
-      background: white;
-      padding: 30px;
-      border-radius: 8px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-      margin-bottom: 20px;
-    }
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
 
-    h1 {
-      color: #333;
-      margin-bottom: 10px;
-    }
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
 
-    .status-badge {
-      display: inline-block;
-      padding: 5px 12px;
-      border-radius: 12px;
-      font-size: 14px;
-      font-weight: 600;
-    }
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
 
-    .status-badge.connected {
-      background: #10B981;
-      color: white;
-    }
+        .content {
+            padding: 30px;
+        }
 
-    .status-badge.disconnected {
-      background: #EF4444;
-      color: white;
-    }
+        .section {
+            margin-bottom: 40px;
+            padding: 25px;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            background: #fafafa;
+        }
 
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 20px;
-      margin-bottom: 20px;
-    }
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 2px solid #4facfe;
+            padding-bottom: 10px;
+        }
 
-    .card {
-      background: white;
-      padding: 20px;
-      border-radius: 8px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
+        .form-group {
+            margin-bottom: 20px;
+        }
 
-    .card h2 {
-      color: #333;
-      margin-bottom: 15px;
-      font-size: 18px;
-    }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
 
-    .stat {
-      display: flex;
-      justify-content: space-between;
-      padding: 10px 0;
-      border-bottom: 1px solid #eee;
-    }
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
 
-    .stat:last-child {
-      border-bottom: none;
-    }
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #4facfe;
+        }
 
-    .stat-label {
-      color: #666;
-    }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
 
-    .stat-value {
-      font-weight: 600;
-      color: #333;
-    }
+        .btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
 
-    .extensions-list {
-      max-height: 300px;
-      overflow-y: auto;
-    }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(79, 172, 254, 0.4);
+        }
 
-    .extension-item {
-      padding: 10px;
-      border: 1px solid #eee;
-      border-radius: 4px;
-      margin-bottom: 10px;
-    }
+        .btn-secondary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
 
-    .extension-item h3 {
-      font-size: 14px;
-      color: #333;
-      margin-bottom: 5px;
-    }
+        .btn-danger {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+        }
 
-    .extension-item small {
-      color: #666;
-      display: block;
-    }
+        .btn-success {
+            background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
+        }
 
-    .btn {
-      display: inline-block;
-      padding: 10px 20px;
-      background: #3B82F6;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-      margin-right: 10px;
-      margin-bottom: 10px;
-    }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
 
-    .btn:hover {
-      background: #2563EB;
-    }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
 
-    .btn-danger {
-      background: #EF4444;
-    }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
 
-    .btn-danger:hover {
-      background: #DC2626;
-    }
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
 
-    .executions-list {
-      max-height: 400px;
-      overflow-y: auto;
-    }
+        .log {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
 
-    .execution-item {
-      padding: 12px;
-      border: 1px solid #eee;
-      border-radius: 4px;
-      margin-bottom: 10px;
-    }
+        .parameter-item {
+            background: white;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
 
-    .execution-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-    }
+        .parameter-item h4 {
+            color: #333;
+            margin-bottom: 10px;
+        }
 
-    .execution-id {
-      font-family: monospace;
-      font-size: 12px;
-      color: #666;
-    }
+        .parameter-item .param-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 12px;
+            color: #666;
+        }
 
-    .execution-status {
-      padding: 3px 8px;
-      border-radius: 3px;
-      font-size: 12px;
-      font-weight: 600;
-    }
+        .execution-item {
+            background: white;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
 
-    .execution-status.pending {
-      background: #FCD34D;
-      color: #92400E;
-    }
+        .execution-item .status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
 
-    .execution-status.running {
-      background: #60A5FA;
-      color: #1E3A8A;
-    }
+        .execution-item .status.running {
+            background: #fff3cd;
+            color: #856404;
+        }
 
-    .execution-status.completed {
-      background: #34D399;
-      color: #065F46;
-    }
+        .execution-item .status.completed {
+            background: #d4edda;
+            color: #155724;
+        }
 
-    .execution-status.failed {
-      background: #F87171;
-      color: #7F1D1D;
-    }
+        .execution-item .status.failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
 
-    .execution-details {
-      font-size: 13px;
-      color: #666;
-    }
+        .hidden {
+            display: none;
+        }
 
-    .form-group {
-      margin-bottom: 15px;
-    }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4facfe;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
 
-    .form-group label {
-      display: block;
-      margin-bottom: 5px;
-      color: #333;
-      font-weight: 600;
-    }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
 
-    .form-group input,
-    .form-group textarea {
-      width: 100%;
-      padding: 8px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      font-family: inherit;
-    }
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
 
-    .form-group textarea {
-      font-family: monospace;
-      font-size: 12px;
-      min-height: 200px;
-    }
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 0;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 600px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            animation: modalSlideIn 0.3s ease-out;
+        }
 
-    .log-container {
-      background: #1e1e1e;
-      color: #d4d4d4;
-      padding: 15px;
-      border-radius: 4px;
-      font-family: 'Courier New', monospace;
-      font-size: 12px;
-      max-height: 300px;
-      overflow-y: auto;
-    }
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
 
-    .log-entry {
-      margin-bottom: 5px;
-      white-space: pre-wrap;
-    }
+        .modal-header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 15px 15px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
 
-    .log-entry.info { color: #4EC9B0; }
-    .log-entry.success { color: #4CAF50; }
-    .log-entry.error { color: #F44336; }
-    .log-entry.warning { color: #FF9800; }
-  </style>
+        .modal-header h3 {
+            margin: 0;
+            font-size: 1.5em;
+        }
+
+        .close {
+            color: white;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .close:hover {
+            opacity: 0.7;
+        }
+
+        .modal-body {
+            padding: 30px;
+        }
+
+        .workflow-info {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border-left: 4px solid #4facfe;
+        }
+
+        .workflow-info h4 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .workflow-info p {
+            color: #666;
+            margin: 5px 0;
+        }
+
+        .param-input-group {
+            margin-bottom: 20px;
+        }
+
+        .param-input-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .param-input-group input,
+        .param-input-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .param-input-group input:focus,
+        .param-input-group textarea:focus {
+            outline: none;
+            border-color: #4facfe;
+        }
+
+        .param-description {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .modal-footer {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-radius: 0 0 15px 15px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .workflow-card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .workflow-card h3 {
+            color: #333;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .workflow-card .icon {
+            font-size: 1.2em;
+        }
+
+        .workflow-card p {
+            color: #666;
+            margin-bottom: 15px;
+        }
+
+        .workflow-params {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .workflow-params h4 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .param-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .param-item:last-child {
+            border-bottom: none;
+        }
+
+        .param-name {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .param-type {
+            background: #4facfe;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+    </style>
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>🔌 Automa WebSocket Server</h1>
-      <p>Test Dashboard</p>
-      <span id="connectionStatus" class="status-badge disconnected">Checking...</span>
-    </header>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Automa WebSocket Test Interface</h1>
+            <p>Test workflow execution with parameters via WebSocket</p>
+        </div>
 
-    <div class="grid">
-      <div class="card">
-        <h2>📊 Server Stats</h2>
-        <div class="stat">
-          <span class="stat-label">Status</span>
-          <span class="stat-value" id="serverStatus">-</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Connected Extensions</span>
-          <span class="stat-value" id="connectedCount">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Total Executions</span>
-          <span class="stat-value" id="totalExecutions">0</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Uptime</span>
-          <span class="stat-value" id="serverUptime">-</span>
-        </div>
-      </div>
+        <div class="content">
+            <!-- Connection Status -->
+            <div class="section">
+                <h2>📡 Connection Status</h2>
+                <div id="connectionStatus" class="status info">
+                    <span class="loading"></span> Checking connection...
+                </div>
+                <button class="btn" onclick="checkConnection()">🔄 Refresh Status</button>
+                <button class="btn btn-secondary" onclick="getExtensions()">📱 Get Extensions</button>
+            </div>
 
-      <div class="card">
-        <h2>🔗 Connected Extensions</h2>
-        <div id="extensionsList" class="extensions-list">
-          <p style="color: #666; text-align: center; padding: 20px;">
-            No extensions connected
-          </p>
+            <!-- Sample Workflows -->
+            <div class="section">
+                <h2>📋 Sample Workflows</h2>
+                
+                <!-- GoogleMap Workflow -->
+                <div class="workflow-card">
+                    <h3>
+                        <span class="icon">🗺️</span>
+                        GoogleMap: Location Search
+                    </h3>
+                    <p>Automated location search workflow that searches for locations on Google Maps and extracts related information.</p>
+                    
+                    <div class="workflow-params">
+                        <h4>Parameters:</h4>
+                        <div class="param-item">
+                            <span class="param-name">location</span>
+                            <span class="param-type">string</span>
+                        </div>
+                        <div class="param-item">
+                            <span class="param-name">keyword</span>
+                            <span class="param-type">string</span>
+                        </div>
+                        <div class="param-item">
+                            <span class="param-name">scroll_total_pages</span>
+                            <span class="param-type">number</span>
+                        </div>
+                        <div class="param-item">
+                            <span class="param-name">scroll_wait_seconds</span>
+                            <span class="param-type">number</span>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="extensionSelect">Select Extension:</label>
+                        <select id="extensionSelect">
+                            <option value="">Loading extensions...</option>
+                        </select>
+                    </div>
+                    
+                    <button class="btn btn-success" onclick="showParameterModal('googlemap')">🚀 Execute Workflow</button>
+                </div>
+
+                <!-- Google Keyword Research Workflow -->
+                <div class="workflow-card">
+                    <h3>
+                        <span class="icon">🌐</span>
+                        Google Keyword Research
+                    </h3>
+                    <p>Automated Google keyword research workflow that searches for keywords and extracts related suggestions.</p>
+                    
+                    <div class="workflow-params">
+                        <h4>Parameters:</h4>
+                        <div class="param-item">
+                            <span class="param-name">keywords</span>
+                            <span class="param-type">string</span>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="extensionSelect2">Select Extension:</label>
+                        <select id="extensionSelect2">
+                            <option value="">Loading extensions...</option>
+                        </select>
+                    </div>
+                    
+                    <button class="btn btn-success" onclick="showParameterModal('keyword-research')">🚀 Execute Workflow</button>
+                </div>
+            </div>
+
+            <!-- Execution History -->
+            <div class="section">
+                <h2>📊 Execution History</h2>
+                <button class="btn" onclick="loadExecutions()">🔄 Refresh History</button>
+                <div id="executionsContainer">
+                    <!-- Executions will be loaded here -->
+                </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="section">
+                <h2>📝 Logs</h2>
+                <button class="btn" onclick="clearLogs()">🗑️ Clear Logs</button>
+                <div id="logs" class="log">Ready to test...\n</div>
+            </div>
         </div>
-      </div>
     </div>
 
-    <div class="card" style="margin-bottom: 20px;">
-      <h2>🚀 Execute Workflow</h2>
-      <div class="form-group">
-        <label>Extension ID</label>
-        <input type="text" id="extensionId" placeholder="Enter extension ID">
-      </div>
-      <div class="form-group">
-        <label>Workflow JSON</label>
-        <textarea id="workflowJson" placeholder="Paste workflow JSON here">{
-  "drawflow": {
-    "nodes": [
-      {
-        "id": "trigger-1",
-        "label": "trigger",
-        "data": {}
-      }
-    ],
-    "edges": []
-  },
-  "name": "Test Workflow",
-  "settings": {}
-}</textarea>
-      </div>
-      <button class="btn" onclick="executeWorkflow()">Execute</button>
-      <button class="btn" onclick="loadSampleWorkflow()">Load Sample</button>
+    <!-- Parameter Input Modal -->
+    <div id="parameterModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">🚀 Execute Workflow</h3>
+                <span class="close" onclick="closeParameterModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Content will be dynamically populated -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeParameterModal()">Cancel</button>
+                <button class="btn btn-success" onclick="executeWorkflowWithParams()">🚀 Execute</button>
+            </div>
+        </div>
     </div>
 
-    <div class="card">
-      <h2>📝 Execution History</h2>
-      <button class="btn" onclick="refreshExecutions()">Refresh</button>
-      <div id="executionsList" class="executions-list">
-        <p style="color: #666; text-align: center; padding: 20px;">
-          No executions yet
-        </p>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    // WebSocket server URL (change this if server runs on different port)
-    const API_BASE = 'http://localhost:8000';
-    let refreshInterval;
-
-    async function fetchData(endpoint, options = {}) {
-      const response = await fetch(`${API_BASE}${endpoint}`, options);
-      return response.json();
-    }
-
-    async function updateStats() {
-      try {
-        const health = await fetchData('/health');
-        const extensions = await fetchData('/api/extensions');
-        const executions = await fetchData('/api/executions');
-
-        document.getElementById('connectionStatus').textContent = 'Connected';
-        document.getElementById('connectionStatus').className = 'status-badge connected';
-        document.getElementById('serverStatus').textContent = health.status;
-        document.getElementById('connectedCount').textContent = extensions.count;
-        document.getElementById('totalExecutions').textContent = executions.count;
-        document.getElementById('serverUptime').textContent = formatUptime(health.uptime);
-
-        updateExtensionsList(extensions.extensions);
-        updateExecutionsList(executions.executions);
-      } catch (error) {
-        document.getElementById('connectionStatus').textContent = 'Disconnected';
-        document.getElementById('connectionStatus').className = 'status-badge disconnected';
-        console.error('Error updating stats:', error);
-      }
-    }
-
-    function updateExtensionsList(extensions) {
-      const list = document.getElementById('extensionsList');
-      
-      if (extensions.length === 0) {
-        list.innerHTML = '<p style="color: #666; text-align: center; padding: 20px;">No extensions connected</p>';
-        return;
-      }
-
-      list.innerHTML = extensions.map(ext => `
-        <div class="extension-item">
-          <h3>${ext.extensionId}</h3>
-          <small>Version: ${ext.version}</small>
-          <small>Connected: ${new Date(ext.connectedAt).toLocaleString()}</small>
-        </div>
-      `).join('');
-
-      // Auto-fill first extension ID
-      if (extensions.length > 0 && !document.getElementById('extensionId').value) {
-        document.getElementById('extensionId').value = extensions[0].extensionId;
-      }
-    }
-
-    function updateExecutionsList(executions) {
-      const list = document.getElementById('executionsList');
-      
-      if (executions.length === 0) {
-        list.innerHTML = '<p style="color: #666; text-align: center; padding: 20px;">No executions yet</p>';
-        return;
-      }
-
-      list.innerHTML = executions.slice(0, 20).map(exec => `
-        <div class="execution-item">
-          <div class="execution-header">
-            <span class="execution-id">${exec.executionId}</span>
-            <span class="execution-status ${exec.status}">${exec.status}</span>
-          </div>
-          <div class="execution-details">
-            ${exec.workflow ? `Workflow: ${exec.workflow.name}` : ''}
-            ${exec.duration ? `Duration: ${exec.duration}ms` : ''}
-            ${exec.startedAtFormatted ? `Started: ${new Date(exec.startedAtFormatted).toLocaleString()}` : ''}
-          </div>
-        </div>
-      `).join('');
-    }
-
-    async function executeWorkflow() {
-      const extensionId = document.getElementById('extensionId').value;
-      const workflowJson = document.getElementById('workflowJson').value;
-
-      if (!extensionId) {
-        alert('Please enter extension ID');
-        return;
-      }
-
-      try {
-        const workflow = JSON.parse(workflowJson);
+    <script>
+        const BASE_URL = 'http://localhost:8000';
+        let currentWorkflow = null;
+        let currentWorkflowType = null;
+        let extensions = [];
         
-        const result = await fetchData('/api/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            extensionId,
-            workflow,
-            inputs: {
-              timestamp: new Date().toISOString(),
+        // Define workflows
+        const workflows = {
+            'googlemap': {
+                name: 'GoogleMap: Location Search',
+                description: 'Automated location search workflow',
+                parameters: [
+                    { name: 'location', type: 'string', defaultValue: 'Hà Đông', placeholder: 'Hà Đông' },
+                    { name: 'keyword', type: 'string', defaultValue: 'spa', placeholder: 'spa' },
+                    { name: 'scroll_total_pages', type: 'number', defaultValue: '5', placeholder: '5' },
+                    { name: 'scroll_wait_seconds', type: 'number', defaultValue: '2', placeholder: '2' }
+                ]
             },
-          }),
+            'keyword-research': {
+                name: 'Google Keyword Research',
+                description: 'Automated Google keyword research workflow',
+                parameters: [
+                    { name: 'keywords', type: 'string', defaultValue: 'marketing automation,seo tools,digital marketing', placeholder: 'keyword 1,keyword 2,keyword 3' }
+                ]
+            }
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            checkConnection();
+            getExtensions();
         });
 
-        alert(`✅ Workflow execution started!\nExecution ID: ${result.executionId}`);
-        setTimeout(updateStats, 1000);
-      } catch (error) {
-        alert(`❌ Error: ${error.message}`);
-      }
-    }
-
-    function loadSampleWorkflow() {
-      document.getElementById('workflowJson').value = JSON.stringify({
-        drawflow: {
-          nodes: [
-            {
-              id: 'trigger-1',
-              label: 'trigger',
-              data: {}
-            },
-            {
-              id: 'new-tab-1',
-              label: 'new-tab',
-              data: {
-                url: 'https://example.com',
-                active: true
-              }
-            },
-            {
-              id: 'delay-1',
-              label: 'delay',
-              data: {
-                time: 2000
-              }
-            }
-          ],
-          edges: [
-            {
-              id: 'edge-1',
-              source: 'trigger-1',
-              target: 'new-tab-1',
-              sourceHandle: 'trigger-1-output-1',
-              targetHandle: 'new-tab-1-input-1'
-            },
-            {
-              id: 'edge-2',
-              source: 'new-tab-1',
-              target: 'delay-1',
-              sourceHandle: 'new-tab-1-output-1',
-              targetHandle: 'delay-1-input-1'
-            }
-          ]
-        },
-        name: 'Sample Workflow',
-        settings: {
-          saveLog: true,
-          blockDelay: 0
+        // Logging function
+        function log(message) {
+            const logsDiv = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            logsDiv.textContent += `[${timestamp}] ${message}\n`;
+            logsDiv.scrollTop = logsDiv.scrollHeight;
         }
-      }, null, 2);
-    }
 
-    function refreshExecutions() {
-      updateStats();
-    }
+        function clearLogs() {
+            document.getElementById('logs').textContent = 'Logs cleared...\n';
+        }
 
-    function formatUptime(seconds) {
-      const hours = Math.floor(seconds / 3600);
-      const minutes = Math.floor((seconds % 3600) / 60);
-      const secs = Math.floor(seconds % 60);
-      return `${hours}h ${minutes}m ${secs}s`;
-    }
+        // Check connection status
+        async function checkConnection() {
+            try {
+                const response = await fetch(`${BASE_URL}/health`);
+                const data = await response.json();
+                
+                const statusDiv = document.getElementById('connectionStatus');
+                statusDiv.className = 'status success';
+                statusDiv.innerHTML = `✅ Connected - Extensions: ${data.connectedExtensions} | Uptime: ${Math.floor(data.uptime)}s`;
+                
+                log('✅ Server connection successful');
+            } catch (error) {
+                const statusDiv = document.getElementById('connectionStatus');
+                statusDiv.className = 'status error';
+                statusDiv.innerHTML = '❌ Connection failed';
+                
+                log(`❌ Connection failed: ${error.message}`);
+            }
+        }
 
-    // Initial load
-    updateStats();
+        // Get connected extensions
+        async function getExtensions() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/extensions`);
+                const data = await response.json();
+                
+                extensions = data.extensions;
+                
+                // Update both select elements
+                const select1 = document.getElementById('extensionSelect');
+                const select2 = document.getElementById('extensionSelect2');
+                
+                [select1, select2].forEach(select => {
+                    select.innerHTML = '';
+                    
+                    if (extensions.length === 0) {
+                        select.innerHTML = '<option value="">No extensions connected</option>';
+                        log('⚠️ No extensions connected');
+                    } else {
+                        extensions.forEach(ext => {
+                            const option = document.createElement('option');
+                            option.value = ext.extensionId;
+                            option.textContent = `${ext.extensionId} (v${ext.version})`;
+                            select.appendChild(option);
+                        });
+                        log(`📱 Found ${extensions.length} connected extension(s)`);
+                    }
+                });
+            } catch (error) {
+                log(`❌ Failed to get extensions: ${error.message}`);
+            }
+        }
 
-    // Auto-refresh every 5 seconds
-    refreshInterval = setInterval(updateStats, 5000);
-  </script>
+        // Show parameter modal for specific workflow type
+        function showParameterModal(workflowType) {
+            const selectId = workflowType === 'googlemap' ? 'extensionSelect' : 'extensionSelect2';
+            const extensionId = document.getElementById(selectId).value;
+            
+            if (!extensionId) {
+                alert('Please select an extension first');
+                return;
+            }
+
+            currentWorkflowType = workflowType;
+            const workflow = workflows[workflowType];
+            
+            // Update modal title
+            document.getElementById('modalTitle').textContent = `🚀 Execute: ${workflow.name}`;
+            
+            // Update extension name in modal
+            const selectedExtension = extensions.find(ext => ext.extensionId === extensionId);
+            const extName = selectedExtension ? `${selectedExtension.extensionId} (v${selectedExtension.version})` : extensionId;
+            
+            // Build modal body
+            let modalBody = `
+                <div class="workflow-info">
+                    <h4>${workflow.name}</h4>
+                    <p><strong>Description:</strong> ${workflow.description}</p>
+                    <p><strong>Extension:</strong> ${extName}</p>
+                </div>
+            `;
+            
+            // Add parameter inputs
+            workflow.parameters.forEach(param => {
+                const inputType = param.type === 'number' ? 'number' : 'text';
+                modalBody += `
+                    <div class="param-input-group">
+                        <label for="param_${param.name}">${param.name} * (${param.type})</label>
+                        <input 
+                            type="${inputType}" 
+                            id="param_${param.name}" 
+                            placeholder="${param.placeholder}"
+                            value="${param.defaultValue}"
+                        >
+                        <div class="param-description">
+                            Type: ${param.type}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            document.getElementById('modalBody').innerHTML = modalBody;
+            
+            // Show modal
+            document.getElementById('parameterModal').style.display = 'block';
+        }
+
+        // Close parameter modal
+        function closeParameterModal() {
+            document.getElementById('parameterModal').style.display = 'none';
+        }
+
+        // Execute workflow with parameters from modal
+        async function executeWorkflowWithParams() {
+            if (!currentWorkflowType) {
+                alert('No workflow selected');
+                return;
+            }
+
+            const selectId = currentWorkflowType === 'googlemap' ? 'extensionSelect' : 'extensionSelect2';
+            const extensionId = document.getElementById(selectId).value;
+            
+            if (!extensionId) {
+                alert('Please select an extension');
+                return;
+            }
+
+            try {
+                const workflow = workflows[currentWorkflowType];
+                
+                // Collect all parameter inputs
+                const inputs = {};
+                workflow.parameters.forEach(param => {
+                    const inputElement = document.getElementById(`param_${param.name}`);
+                    if (inputElement) {
+                        let value = inputElement.value.trim();
+                        
+                        // Convert to appropriate type
+                        if (param.type === 'number') {
+                            value = Number(value);
+                            if (isNaN(value)) {
+                                alert(`Invalid number value for ${param.name}`);
+                                throw new Error(`Invalid number value for ${param.name}`);
+                            }
+                        }
+                        
+                        inputs[param.name] = value;
+                    }
+                });
+
+                log(`🚀 Executing ${workflow.name} workflow`);
+                log(`📥 Parameters: ${JSON.stringify(inputs)}`);
+
+                // Load the appropriate workflow JSON
+                let workflowData = null;
+                
+                if (currentWorkflowType === 'googlemap') {
+                    workflowData = await loadGoogleMapWorkflow();
+                } else if (currentWorkflowType === 'keyword-research') {
+                    workflowData = await loadKeywordResearchWorkflow();
+                }
+
+                if (!workflowData) {
+                    alert('Failed to load workflow');
+                    return;
+                }
+
+                const response = await fetch(`${BASE_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        extensionId,
+                        workflow: workflowData,
+                        inputs,
+                        options: {
+                            checkParams: false
+                        }
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    log(`✅ Execution started: ${data.executionId}`);
+                    closeParameterModal();
+                    loadExecutions(); // Refresh execution list
+                } else {
+                    log(`❌ Execution failed: ${data.error}`);
+                    alert(`Execution failed: ${data.error}`);
+                }
+            } catch (error) {
+                log(`❌ Execution error: ${error.message}`);
+                alert(`Execution error: ${error.message}`);
+            }
+        }
+
+        // Load GoogleMap workflow
+        async function loadGoogleMapWorkflow() {
+            try {
+                const response = await fetch('/GoogleMap_ Location search.automa.json');
+                const workflowData = await response.json();
+                return workflowData;
+            } catch (error) {
+                log(`❌ Failed to load GoogleMap workflow: ${error.message}`);
+                // Fallback to inline workflow data
+                return null;
+            }
+        }
+
+        // Load Keyword Research workflow
+        async function loadKeywordResearchWorkflow() {
+            // Return the Google Keyword Research workflow JSON
+            return {"extVersion":"1.29.12","name":"Google Keyword Research","icon":"riGlobalLine","table":[{"id":"25D2q","name":"keyword","type":"string"},{"id":"38NQr","name":"related","type":"string"}],"version":"1.29.12","drawflow":{"edges":[{"data":{},"id":"vueflow__edge-2VtN_ZVBleyrXpIe6hHqm2VtN_ZVBleyrXpIe6hHqm-output-1-q2ayq0pq2ayq0p-input-1","label":"","markerEnd":"","selectable":true,"source":"2VtN_ZVBleyrXpIe6hHqm","sourceHandle":"2VtN_ZVBleyrXpIe6hHqm-output-1","sourceX":311.99923978407867,"sourceY":71.9998954573673,"target":"q2ayq0p","targetHandle":"q2ayq0p-input-1","targetX":364.00013005646287,"targetY":71.99989545736732,"type":"default","updatable":true,"z":0},{"data":{},"id":"vueflow__edge-q2ayq0pq2ayq0p-output-1-ls02uyrls02uyr-input-1","label":"","markerEnd":"","selectable":true,"source":"q2ayq0p","sourceHandle":"q2ayq0p-output-1","sourceX":603.9992397840788,"sourceY":71.99989545736732,"target":"ls02uyr","targetHandle":"ls02uyr-input-1","targetX":656.0001300564627,"targetY":71.9998954573673,"type":"default","updatable":true,"z":0},{"data":{},"id":"vueflow__edge-ls02uyrls02uyr-output-1-xk53h8ixk53h8i-input-1","label":"","markerEnd":"","selectable":true,"source":"ls02uyr","sourceHandle":"ls02uyr-output-1","sourceX":895.9993476467235,"sourceY":71.9998954573673,"target":"xk53h8i","targetHandle":"xk53h8i-input-1","targetX":948.0001300564627,"targetY":71.9998954573673,"type":"default","updatable":true,"z":0},{"data":{},"id":"edge-6k9nnc2","label":"","markerEnd":"","selectable":true,"source":"uoxxd4x","sourceHandle":"uoxxd4x-output-1","sourceX":311.99923978407867,"sourceY":193.99988871595198,"target":"kz3rbur","targetHandle":"kz3rbur-input-1","targetX":364.00013005646275,"targetY":193.99988871595198,"type":"default","updatable":true,"z":0},{"data":{},"id":"vueflow__edge-kz3rburkz3rbur-output-1-f1fo1xhf1fo1xh-input-1","label":"","markerEnd":"","selectable":true,"source":"kz3rbur","sourceHandle":"kz3rbur-output-1","sourceX":603.9992397840787,"sourceY":193.99988871595198,"target":"f1fo1xh","targetHandle":"f1fo1xh-input-1","targetX":664.3258584434643,"targetY":193.99988871595195,"type":"default","updatable":true,"z":0},{"data":{},"id":"vueflow__edge-f1fo1xhf1fo1xh-output-1-5odnjn35odnjn3-input-1","label":"","markerEnd":"","selectable":true,"source":"f1fo1xh","sourceHandle":"f1fo1xh-output-1","sourceX":904.3250760337252,"sourceY":193.99988871595195,"target":"5odnjn3","targetHandle":"5odnjn3-input-1","targetX":948.0001300564627,"targetY":193.99988871595198,"type":"default","updatable":true,"z":0},{"data":{},"id":"vueflow__edge-5odnjn35odnjn3-output-1-th64xxbth64xxb-input-1","label":"","markerEnd":"","selectable":true,"source":"5odnjn3","sourceHandle":"5odnjn3-output-1","sourceX":1187.9992397840786,"sourceY":193.99988871595198,"target":"th64xxb","targetHandle":"th64xxb-input-1","targetX":1203.719227278685,"targetY":209.93204334960004,"type":"default","updatable":true,"z":0},{"data":{},"id":"vueflow__edge-th64xxbth64xxb-output-1-xcsy0gjxcsy0gj-input-1","label":"","markerEnd":"","selectable":true,"source":"th64xxb","sourceHandle":"th64xxb-output-1","sourceX":1443.7183370063008,"sourceY":209.93204334960004,"target":"xcsy0gj","targetHandle":"xcsy0gj-input-1","targetX":79.18658838979584,"targetY":359.78794612737784,"type":"default","updatable":true,"z":0},{"data":{},"id":"vueflow__edge-xk53h8ixk53h8i-output-1-uoxxd4xuoxxd4x-input-1","label":"","markerEnd":"","selectable":true,"source":"xk53h8i","sourceHandle":"xk53h8i-output-1","sourceX":1187.9992397840786,"sourceY":71.9998954573673,"target":"uoxxd4x","targetHandle":"uoxxd4x-input-1","targetX":72.00007612514028,"targetY":193.99988871595198,"type":"default","updatable":true,"z":0},{"class":"connected-edges","data":{},"id":"vueflow__edge-xcsy0gjxcsy0gj-output-1-tts9dbctts9dbc-input-1","label":"","markerEnd":"","selectable":true,"source":"xcsy0gj","sourceHandle":"xcsy0gj-output-1","sourceX":319.18575204873423,"sourceY":359.78794612737784,"target":"tts9dbc","targetHandle":"tts9dbc-input-1","targetX":647.4239217010908,"targetY":621.5156648586484,"type":"default","updatable":true,"z":0}],"nodes":[{"data":{"activeInInput":false,"contextMenuName":"","contextTypes":[],"date":"","days":[],"delay":5,"description":"","disableBlock":false,"interval":60,"isUrlRegex":false,"observeElement":{"baseElOptions":{"attributeFilter":[],"attributes":false,"characterData":false,"childList":true,"subtree":false},"baseSelector":"","matchPattern":"","selector":"","targetOptions":{"attributeFilter":[],"attributes":false,"characterData":false,"childList":true,"subtree":false}},"parameters":[{"defaultValue":"","name":"keywords","placeholder":"keyword 1,keyword 2","type":"string"}],"settings":{"blockTimeout":0,"debugMode":false},"shortcut":"","time":"00:00","type":"manual","url":""},"id":"2VtN_ZVBleyrXpIe6hHqm","initialized":false,"label":"trigger","position":{"x":96,"y":36},"type":"BlockBasic"},{"data":{"active":true,"customUserAgent":false,"description":"","disableBlock":false,"inGroup":false,"onError":{"dataToInsert":[],"enable":false,"errorMessage":"","insertData":false,"retry":false,"retryInterval":2,"retryTimes":1,"toDo":"error"},"settings":{"blockTimeout":0,"debugMode":false},"updatePrevTab":false,"url":"https://www.google.com/","userAgent":"","waitTabLoaded":false},"id":"q2ayq0p","initialized":false,"label":"new-tab","position":{"x":388.0000000000001,"y":36.000000000000014},"type":"BlockBasic"},{"data":{"code":"const keywords = automaRefData('variables', 'keywords');\nautomaSetVariable(\n  'keywords', \n  keywords?.split(',')?.map((keyword) => keyword.trim())\n)","context":"website","description":"","disableBlock":false,"everyNewTab":false,"preloadScripts":[],"runBeforeLoad":false,"timeout":20000},"id":"ls02uyr","initialized":false,"label":"javascript-code","position":{"x":680,"y":36},"type":"BlockBasic"},{"data":{"description":"","disableBlock":false,"elementSelector":"","fromNumber":1,"loopData":"[]","loopId":"keywords","loopThrough":"variable","maxLoop":0,"referenceKey":"","resumeLastWorkflow":false,"startIndex":0,"toNumber":10,"variableName":"keywords","waitForSelector":false,"waitSelectorTimeout":5000},"id":"xk53h8i","initialized":false,"label":"loop-data","position":{"x":972,"y":36},"type":"BlockBasic"},{"data":{"dataList":[{"name":"25D2q","type":"table","value":"{{loopData@keywords}}"}],"description":"","disableBlock":false},"id":"f1fo1xh","initialized":false,"label":"insert-data","position":{"x":688.3257283870016,"y":157.99999999999997},"type":"BlockBasic"},{"data":{"disableBlock":false,"loopId":"keywords"},"id":"xcsy0gj","initialized":false,"label":"loop-breakpoint","position":{"x":103.18645833333312,"y":284.19444444444446},"type":"BlockLoopBreakpoint"},{"data":{"assignVariable":false,"clearValue":true,"dataColumn":"","delay":70,"description":"","disableBlock":false,"events":[],"findBy":"cssSelector","getValue":false,"markEl":false,"multiple":false,"optionPosition":"1","saveData":false,"selectOptionBy":"value","selected":true,"selector":"textarea[name=\"q\"]","type":"text-field","value":"{{loopData@keywords}}","variableName":"","waitForSelector":false,"waitSelectorTimeout":5000},"id":"uoxxd4x","initialized":false,"label":"forms","position":{"x":96,"y":158},"type":"BlockBasic"},{"data":{"description":"","disableBlock":false,"elementSelector":"[role=\"listbox\"] [role=\"option\"]","fromNumber":1,"loopData":"[]","loopId":"options","loopThrough":"elements","maxLoop":0,"referenceKey":"","resumeLastWorkflow":false,"startIndex":0,"toNumber":10,"variableName":"","waitForSelector":false,"waitSelectorTimeout":5000},"id":"kz3rbur","initialized":false,"label":"loop-data","position":{"x":388,"y":158},"type":"BlockBasic"},{"data":{"addExtraRow":false,"assignVariable":false,"dataColumn":"38NQr","description":"","disableBlock":false,"extraRowDataColumn":"","extraRowDataColumn":"","extraRowValue":"","findBy":"cssSelector","includeTags":false,"markEl":false,"multiple":false,"prefixText":"","regex":"","regexExp":["g","g","g"],"saveData":true,"selector":"{{loopData@options}}","suffixText":"","useTextContent":false,"variableName":"","waitForSelector":false,"waitSelectorTimeout":5000},"id":"5odnjn3","initialized":false,"label":"get-text","position":{"x":972,"y":158},"type":"BlockBasic"},{"data":{"disableBlock":false,"loopId":"options"},"id":"th64xxb","initialized":false,"label":"loop-breakpoint","position":{"x":1227.7190972222222,"y":134.33854166666666},"type":"BlockLoopBreakpoint"},{"data":{"addBOMHeader":true,"csvDelimiter":",","dataToExport":"data-columns","description":"","disableBlock":false,"name":"google-keywords","onConflict":"uniquify","refKey":"","type":"csv","variableName":""},"id":"tts9dbc","initialized":false,"label":"export-data","position":{"x":671.4237916446281,"y":585.5157626598658},"type":"BlockBasic"},{"data":{"assignVariable":false,"captureActiveTab":true,"dataColumn":"","description":"","disableBlock":false,"ext":"png","fileName":"b","fullPage":false,"quality":100,"saveToColumn":false,"saveToComputer":true,"selector":"div","type":"element","variableName":"screenshopTest"},"id":"mxes7vz","initialized":false,"label":"take-screenshot","position":{"x":796.9016591167974,"y":-148.98142064067073},"type":"BlockBasic"}],"position":[0,0],"viewport":{"x":0,"y":0,"zoom":1.1317157322849614},"zoom":1.1317157322849614},"settings":{"aipowerToken":"","blockDelay":0,"debugMode":false,"defaultColumnName":"column","events":[],"execContext":"popup","executedBlockOnWeb":false,"inputAutocomplete":true,"insertDefaultColumn":false,"notification":true,"onError":"stop-workflow","publicId":"","restartTimes":3,"reuseLastState":false,"saveLog":true,"tabLoadTimeout":30000},"globalData":"{\n\t\"key\": \"value\"\n}","description":"","includedWorkflows":{}};
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('parameterModal');
+            if (event.target === modal) {
+                closeParameterModal();
+            }
+        }
+
+        // Load execution history
+        async function loadExecutions() {
+            try {
+                const response = await fetch(`${BASE_URL}/api/executions`);
+                const data = await response.json();
+                
+                const container = document.getElementById('executionsContainer');
+                container.innerHTML = '';
+
+                if (data.executions.length === 0) {
+                    container.innerHTML = '<p>No executions found</p>';
+                    return;
+                }
+
+                data.executions.slice(0, 10).forEach(execution => {
+                    const execDiv = document.createElement('div');
+                    execDiv.className = 'execution-item';
+                    execDiv.innerHTML = `
+                        <div>
+                            <strong>${execution.workflowId || 'Unknown'}</strong>
+                            <span class="status ${execution.status}">${execution.status}</span>
+                        </div>
+                        <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                            ID: ${execution.executionId.substring(0, 20)}...
+                            ${execution.startedAtFormatted ? ` | Started: ${new Date(execution.startedAtFormatted).toLocaleString()}` : ''}
+                            ${execution.duration ? ` | Duration: ${execution.duration}ms` : ''}
+                        </div>
+                    `;
+                    container.appendChild(execDiv);
+                });
+
+                log(`📊 Loaded ${data.executions.length} executions`);
+            } catch (error) {
+                log(`❌ Failed to load executions: ${error.message}`);
+            }
+        }
+
+        // Auto-refresh every 5 seconds
+        setInterval(() => {
+            checkConnection();
+            loadExecutions();
+        }, 5000);
+    </script>
 </body>
 </html>
-

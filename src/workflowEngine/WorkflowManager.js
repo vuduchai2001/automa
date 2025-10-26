@@ -83,27 +83,24 @@ class WorkflowManager {
           });
       }
 
+      const workflowHistory = history.map((item) => {
+        delete item.logId;
+        delete item.prevBlockData;
+        delete item.workerId;
+        item.description = item.description || '';
+        return item;
+      });
+      const workflowRefData = {
+        status,
+        startedAt: rest.startedTimestamp,
+        endedAt: rest.endedTimestamp
+          ? rest.endedTimestamp - rest.startedTimestamp
+          : null,
+        logs: workflowHistory,
+        errorMessage: status === 'error' ? getBlockMessage(blockDetail) : null,
+      };
+
       if (convertedWorkflow.settings?.events) {
-        const workflowHistory = history.map((item) => {
-          delete item.logId;
-          delete item.prevBlockData;
-          delete item.workerId;
-
-          item.description = item.description || '';
-
-          return item;
-        });
-        const workflowRefData = {
-          status,
-          startedAt: rest.startedTimestamp,
-          endedAt: rest.endedTimestamp
-            ? rest.endedTimestamp - rest.startedTimestamp
-            : null,
-          logs: workflowHistory,
-          errorMessage:
-            status === 'error' ? getBlockMessage(blockDetail) : null,
-        };
-
         convertedWorkflow.settings.events.forEach((event) => {
           if (status === 'success' && !event.events.includes('finish:success'))
             return;
@@ -117,6 +114,19 @@ class WorkflowManager {
           });
         });
       }
+
+      console.log(engine.referenceData.table);
+
+      // Send workflow data to backend
+      this.sendWorkflowDataToBackend({
+        workflowRefData,
+        variables: { ...engine.referenceData.variables },
+        globalData: { ...engine.referenceData.globalData },
+        tableData: { ...engine.referenceData.table },
+        workflowId: id,
+        status,
+        timestamp: Date.now(),
+      });
     });
 
     BrowserAPIService.storage.local
@@ -173,6 +183,69 @@ class WorkflowManager {
    */
   updateExecution(id, stateData) {
     return this.#state.update(id, stateData);
+  }
+
+  /**
+   * Send workflow data to backend for logging
+   * @param {object} data - Workflow execution data
+   */
+  async sendWorkflowDataToBackend(data) {
+    try {
+      console.log('📤 [WorkflowManager] Sending workflow data to backend:', {
+        workflowId: data.workflowId,
+        status: data.status,
+        timestamp: data.timestamp,
+      });
+
+      // Get WebSocket config to determine backend URL
+      const { wsConfig } = await BrowserAPIService.storage.local.get(
+        'wsConfig'
+      );
+      if (!wsConfig || !wsConfig.url) {
+        console.warn(
+          '[WorkflowManager] No WebSocket config found, skipping backend log'
+        );
+        return;
+      }
+
+      // Extract base URL from WebSocket URL
+      const baseUrl = wsConfig.url
+        .replace('ws://', 'http://')
+        .replace('wss://', 'https://');
+      const apiUrl = `${baseUrl}/api/workflow-log`;
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          workflowId: data.workflowId,
+          status: data.status,
+          timestamp: data.timestamp,
+          workflowRefData: data.workflowRefData,
+          tableData: data.tableData,
+          variables: data.variables,
+          globalData: data.globalData,
+        }),
+      });
+
+      if (response.ok) {
+        console.log(
+          '✅ [WorkflowManager] Workflow data sent to backend successfully'
+        );
+      } else {
+        console.error(
+          '❌ [WorkflowManager] Failed to send workflow data to backend:',
+          response.status
+        );
+      }
+    } catch (error) {
+      console.error(
+        '❌ [WorkflowManager] Error sending workflow data to backend:',
+        error
+      );
+    }
   }
 }
 

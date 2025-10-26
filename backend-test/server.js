@@ -2,10 +2,16 @@ const WebSocket = require('ws');
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const app = express();
+
+// Increase payload limit for large screenshots
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
@@ -21,6 +27,18 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || 'test-token-12345';
 // Data store (in production, use a real database)
 const connectedExtensions = new Map();
 const executionHistory = new Map();
+
+// Ensure logs directory exists
+const logsDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+// Ensure images directory exists
+const imagesDir = path.join(__dirname, 'images');
+if (!fs.existsSync(imagesDir)) {
+  fs.mkdirSync(imagesDir, { recursive: true });
+}
 
 // ═══════════════════════════════════════════════════════════
 // WEBSOCKET CONNECTION HANDLER
@@ -188,6 +206,26 @@ wss.on('connection', (ws, req) => {
       executionId: message.executionId,
       status: message.status,
       duration: message.duration ? `${message.duration}ms` : 'N/A',
+    });
+    
+    // Log detailed response data
+    console.log('📊 [Backend] Full workflow response:', {
+      executionId: message.executionId,
+      workflowId: message.workflowId,
+      status: message.status,
+      message: message.message,
+      duration: message.duration,
+      timestamp: message.timestamp,
+      dataKeys: message.data ? Object.keys(message.data) : [],
+      logsCount: message.logs ? message.logs.length : 0,
+      hasTableData: message.data?.table ? message.data.table.length : 0,
+      hasVariables: message.data?.variables ? Object.keys(message.data.variables).length : 0,
+      hasExtractedData: !!message.data?.extractedData,
+      sampleData: {
+        table: message.data?.table?.slice(0, 2) || [],
+        variables: message.data?.variables ? Object.keys(message.data.variables).slice(0, 5) : [],
+        logs: message.logs?.slice(0, 3) || []
+      }
     });
     
     const execution = executionHistory.get(message.executionId) || {};
@@ -586,6 +624,217 @@ app.post('/api/ping/:extensionId', (req, res) => {
   }
 });
 
+// Receive workflow log data from extension
+app.post('/api/workflow-log', (req, res) => {
+  const { workflowId, status, timestamp, workflowRefData, variables, globalData, tableData } = req.body;
+  
+  if (!workflowId) {
+    return res.status(400).json({ error: 'workflowId is required' });
+  }
+  
+  try {
+    // Create log data object
+    const logData = {
+      workflowId,
+      status,
+      timestamp,
+      receivedAt: new Date().toISOString(),
+      workflowRefData,
+      tableData: tableData || [],
+      variables,
+      globalData,
+    };
+    
+    // Generate filename with timestamp
+    const date = new Date(timestamp);
+    const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
+    const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-'); // HH-MM-SS
+    const filename = `workflow-${workflowId}-${dateStr}-${timeStr}.json`;
+    const filepath = path.join(logsDir, filename);
+    
+    // Write to file
+    fs.writeFileSync(filepath, JSON.stringify(logData, null, 2));
+    
+    console.log('📝 [Backend] Workflow log saved:', {
+      workflowId,
+      status,
+      filename,
+      filepath,
+      dataSize: JSON.stringify(logData).length
+    });
+    
+    res.json({
+      success: true,
+      message: 'Workflow log saved successfully',
+      filename,
+      workflowId,
+      status,
+    });
+  } catch (error) {
+    console.error('❌ [Backend] Error saving workflow log:', error);
+    res.status(500).json({
+      error: 'Failed to save workflow log',
+      message: error.message,
+    });
+  }
+});
+
+// Receive screenshot from extension
+app.post('/api/screenshot', (req, res) => {
+  const { 
+    workflowId, 
+    blockId, 
+    blockLabel, 
+    errorMessage, 
+    errorStack, 
+    status,
+    timestamp, 
+    screenshotDataUrl, 
+    activeTabUrl 
+  } = req.body;
+  
+  if (!workflowId || !screenshotDataUrl) {
+    return res.status(400).json({ error: 'workflowId and screenshotDataUrl are required' });
+  }
+  
+  try {
+    // Extract base64 data from data URL
+    const base64Data = screenshotDataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
+    
+    // Generate filename with timestamp and status
+    const date = new Date(timestamp);
+    const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
+    const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-'); // HH-MM-SS
+    const statusPrefix = status === 'success' ? 'success' : status === 'manual' ? 'manual' : 'error';
+    const filename = `screenshot-${statusPrefix}-${workflowId}-${blockId}-${dateStr}-${timeStr}.jpg`;
+    const filepath = path.join(imagesDir, filename);
+    
+    // Write image file
+    fs.writeFileSync(filepath, base64Data, 'base64');
+    
+    // Create metadata file
+    const metadata = {
+      workflowId,
+      blockId,
+      blockLabel,
+      status: status || 'error',
+      errorMessage,
+      errorStack,
+      timestamp,
+      activeTabUrl,
+      filename,
+      filepath,
+      receivedAt: new Date().toISOString(),
+    };
+    
+    const metadataFilename = `screenshot-${statusPrefix}-${workflowId}-${blockId}-${dateStr}-${timeStr}.json`;
+    const metadataFilepath = path.join(imagesDir, metadataFilename);
+    fs.writeFileSync(metadataFilepath, JSON.stringify(metadata, null, 2));
+    
+    console.log('📸 [Backend] Screenshot saved:', {
+      workflowId,
+      blockId,
+      blockLabel,
+      status: status || 'error',
+      filename,
+      filepath,
+      errorMessage: errorMessage?.substring(0, 50) + '...'
+    });
+    
+    res.json({
+      success: true,
+      message: 'Screenshot saved successfully',
+      filename,
+      metadataFilename,
+      workflowId,
+      blockId,
+    });
+  } catch (error) {
+    console.error('❌ [Backend] Error saving screenshot:', error);
+    res.status(500).json({
+      error: 'Failed to save screenshot',
+      message: error.message,
+    });
+  }
+});
+
+// Receive screenshot-step from extension
+app.post('/api/screenshot-step', (req, res) => {
+  const { 
+    screenshot, 
+    blockId, 
+    blockLabel, 
+    tabUrl, 
+    tabTitle, 
+    timestamp, 
+    workflowId, 
+    description, 
+    screenshotType 
+  } = req.body;
+  
+  if (!screenshot || !workflowId) {
+    return res.status(400).json({ error: 'screenshot and workflowId are required' });
+  }
+  
+  try {
+    // Extract base64 data from data URL
+    const base64Data = screenshot.replace(/^data:image\/[a-z]+;base64,/, '');
+    
+    // Generate filename with timestamp
+    const date = new Date(timestamp);
+    const dateStr = date.toISOString().split('T')[0];
+    const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-');
+    const filename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.jpg`;
+    const filepath = path.join(imagesDir, filename);
+    
+    // Write image file
+    fs.writeFileSync(filepath, base64Data, 'base64');
+    
+    // Create metadata file
+    const metadata = {
+      workflowId,
+      blockId,
+      blockLabel,
+      tabUrl,
+      tabTitle,
+      timestamp,
+      description,
+      screenshotType,
+      prevStep: req.body.prevStep || null,
+      filename,
+      filepath,
+      receivedAt: new Date().toISOString(),
+    };
+    
+    const metadataFilename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.json`;
+    const metadataFilepath = path.join(imagesDir, metadataFilename);
+    fs.writeFileSync(metadataFilepath, JSON.stringify(metadata, null, 2));
+    
+    console.log('📸 [Backend] Step screenshot saved:', {
+      workflowId,
+      blockId,
+      blockLabel,
+      filename,
+      tabTitle: tabTitle?.substring(0, 30) + '...'
+    });
+    
+    res.json({
+      success: true,
+      message: 'Step screenshot saved successfully',
+      filename,
+      metadataFilename,
+      workflowId,
+      blockId,
+    });
+  } catch (error) {
+    console.error('❌ [Backend] Error saving step screenshot:', error);
+    res.status(500).json({
+      error: 'Failed to save step screenshot',
+      message: error.message,
+    });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 // PERIODIC TASKS
 // ═══════════════════════════════════════════════════════════
@@ -643,6 +892,9 @@ server.listen(PORT, () => {
   console.log(`   GET  /api/executions/:id        - Get specific execution`);
   console.log(`   POST /api/status/:extensionId   - Get extension status`);
   console.log(`   POST /api/ping/:extensionId     - Ping extension`);
+  console.log(`   POST /api/workflow-log          - Receive workflow log data`);
+  console.log(`   POST /api/screenshot            - Receive screenshot data`);
+  console.log(`   POST /api/screenshot-step       - Receive step screenshot data`);
   console.log('');
   console.log('📝 Waiting for connections...');
   console.log('════════════════════════════════════════════════');

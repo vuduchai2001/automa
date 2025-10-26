@@ -1,5 +1,6 @@
 import browser from 'webextension-polyfill';
 import { nanoid } from 'nanoid';
+import dbLogs from '@/db/logs';
 import BackgroundWorkflowUtils from './BackgroundWorkflowUtils';
 import { getWebSocketConfig } from './WebSocketConfig';
 
@@ -67,10 +68,7 @@ class BackgroundWebSocket {
 
       // Auto-enable WebSocket if not configured
       if (!wsConfig) {
-        console.log(
-          '[WebSocket] No config found, setting up default configuration'
-        );
-        await this.setupDefaultConfig();
+        await this.setupConfig();
         // Get config again after setup
         const { wsConfig: newConfig } = await browser.storage.local.get(
           'wsConfig'
@@ -82,17 +80,14 @@ class BackgroundWebSocket {
       }
 
       if (!wsConfig.enabled) {
-        console.log('[WebSocket] WebSocket disabled in settings');
         return;
       }
 
       const { url, authToken } = wsConfig;
       if (!url) {
-        console.error('[WebSocket] URL not configured');
         return;
       }
 
-      console.log('[WebSocket] Auto-connecting to:', url);
       this.connect(url, authToken);
     } catch (error) {
       console.error('[WebSocket] Failed to initialize:', error);
@@ -103,11 +98,21 @@ class BackgroundWebSocket {
 
   /**
    * Setup default WebSocket configuration
+   * @returns {Promise<void>}
    */
-  async setupDefaultConfig() {
+  static async setupDefaultConfig() {
     const defaultConfig = getWebSocketConfig();
     await browser.storage.local.set({ wsConfig: defaultConfig });
-    console.log('[WebSocket] Default configuration set:', defaultConfig);
+  }
+
+  /**
+   * Get or setup default config
+   * @returns {Promise<void>}
+   */
+  async setupConfig() {
+    await this.init();
+    const defaultConfig = getWebSocketConfig();
+    await browser.storage.local.set({ wsConfig: defaultConfig });
   }
 
   /**
@@ -235,12 +240,18 @@ class BackgroundWebSocket {
         name: workflow.name || 'WebSocket Workflow',
       };
 
+      // Parse parameters from trigger block
+      const parsedVariables = BackgroundWebSocket.parseWorkflowParameters(
+        workflowData,
+        inputs
+      );
+
       // Prepare execution options
       const execOptions = {
         ...options,
         checkParams: false, // Skip params prompt
         data: {
-          variables: inputs || {},
+          variables: parsedVariables,
         },
       };
 
@@ -285,6 +296,71 @@ class BackgroundWebSocket {
   }
 
   /**
+   * Parse workflow parameters from trigger block and inputs
+   * @param {Object} workflow - Workflow data
+   * @param {Object} inputs - Input parameters
+   * @returns {Object} Parsed variables
+   */
+  static parseWorkflowParameters(workflow, inputs = {}) {
+    try {
+      // Find trigger block
+      const triggerBlock = workflow.drawflow.nodes.find(
+        (node) => node.label === 'trigger'
+      );
+
+      if (!triggerBlock || !triggerBlock.data.parameters) {
+        return inputs;
+      }
+
+      const { parameters } = triggerBlock.data;
+      const parsedVariables = {};
+
+      // Parse each parameter
+      parameters.forEach((param) => {
+        const paramName = param.name;
+        const paramType = param.type;
+        const { defaultValue } = param;
+
+        // Get value from inputs or use default
+        const value =
+          inputs[paramName] !== undefined ? inputs[paramName] : defaultValue;
+
+        // Parse value based on type
+        switch (paramType) {
+          case 'string':
+            parsedVariables[paramName] = String(value || '');
+            break;
+          case 'number':
+            parsedVariables[paramName] = Number(value) || 0;
+            break;
+          case 'json':
+            try {
+              parsedVariables[paramName] =
+                typeof value === 'string' ? JSON.parse(value) : value;
+            } catch (e) {
+              console.warn(
+                `[WebSocket] Failed to parse JSON for parameter ${paramName}:`,
+                e
+              );
+              parsedVariables[paramName] = value;
+            }
+            break;
+          case 'checkbox':
+            parsedVariables[paramName] = Boolean(value);
+            break;
+          default:
+            parsedVariables[paramName] = value;
+        }
+      });
+
+      return parsedVariables;
+    } catch (error) {
+      console.error('[WebSocket] Error parsing parameters:', error);
+      return inputs; // Fallback to original inputs
+    }
+  }
+
+  /**
    * Monitor workflow execution status
    */
   async monitorWorkflowExecution(executionId, workflowId) {
@@ -323,9 +399,11 @@ class BackgroundWebSocket {
 
         if (execution) {
           // Fetch execution results from logs
-          const results = await this.getWorkflowResults(workflowId);
+          const results = await BackgroundWebSocket.getWorkflowResults(
+            workflowId
+          );
 
-          this.send({
+          const response = {
             type: 'workflow_result',
             executionId,
             workflowId,
@@ -335,8 +413,9 @@ class BackgroundWebSocket {
             timestamp: Date.now(),
             data: results.data,
             logs: results.logs,
-          });
+          };
 
+          this.send(response);
           this.activeExecutions.delete(executionId);
         }
 
@@ -352,12 +431,11 @@ class BackgroundWebSocket {
 
   /**
    * Get workflow execution results from logs
+   * @param {string} workflowId - Workflow ID
+   * @returns {Promise<Object>} Workflow results
    */
-  async getWorkflowResults(workflowId) {
+  static async getWorkflowResults(workflowId) {
     try {
-      // Import dbLogs dynamically to avoid circular dependencies
-      const dbLogs = (await import('@/db/logs')).default;
-
       // Find the most recent log for this workflow
       const logItems = await dbLogs.items
         .where('workflowId')
@@ -399,9 +477,11 @@ class BackgroundWebSocket {
         logs: histories?.data || [],
       };
 
-      // Add sample extracted data if table is empty (for demo purposes)
+      // Add sample extracted data if table is empty
       if (results.data.table.length === 0 && results.logs.length > 0) {
-        results.data.extractedData = this.extractSampleData(results.logs);
+        results.data.extractedData = BackgroundWebSocket.extractSampleData(
+          results.logs
+        );
       }
 
       return results;
@@ -421,8 +501,10 @@ class BackgroundWebSocket {
 
   /**
    * Extract sample data from logs (for demonstration)
+   * @param {Array} logs - Log entries
+   * @returns {Object} Extracted data
    */
-  extractSampleData(logs) {
+  static extractSampleData(logs) {
     const extracted = {
       blocksExecuted: logs.length,
       blockTypes: {},

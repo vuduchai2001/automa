@@ -798,6 +798,20 @@
           "element": "An element"
         }
       },
+      "take-screenshot-and-log": {
+        "name": "Take Screenshot and Log",
+        "description": "Take a screenshot and send to backend for logging purposes",
+        "imageQuality": "Image quality",
+        "saveToColumn": "Insert screenshot to table",
+        "saveToComputer": "Save screenshot to computer",
+        "fullPage": "Take full page screenshot",
+        "types": {
+          "title": "Take a screenshot of",
+          "page": "A page",
+          "fullpage": "A full page",
+          "element": "An element"
+        }
+      },
       "switch-to": {
         "name": "Switch frame",
         "description": "Switch between the main window and an iframe",
