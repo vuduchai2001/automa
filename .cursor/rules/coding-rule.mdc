@@ -1,0 +1,464 @@
+---
+description: Quy tắc coding cho project Automa - Browser Extension Automation
+globs: ['**/*.js', '**/*.vue', '**/*.json']
+alwaysApply: true
+---
+
+# Automa Coding Rules
+
+## 1. Cấu trúc Thư mục (Folder Structure)
+
+### Sơ đồ cấu trúc chính:
+
+```
+automa/
+├── src/
+│   ├── background/           # Service Worker (Manifest V3)
+│   │   ├── index.js         # Entry point cho background script
+│   │   ├── BackgroundEventsListeners.js
+│   │   ├── BackgroundWorkflowUtils.js
+│   │   └── BackgroundWebSocket.js
+│   ├── content/             # Content Scripts
+│   │   ├── index.js         # Main content script
+│   │   ├── blocksHandler/   # Block execution handlers
+│   │   └── elementSelector/ # Element selection utilities
+│   ├── popup/               # Extension Popup UI
+│   │   ├── App.vue
+│   │   ├── index.js
+│   │   └── pages/
+│   ├── newtab/              # Dashboard UI (New Tab)
+│   ├── components/          # Vue Components
+│   │   ├── ui/             # UI Components (UiButton, UiInput, etc.)
+│   │   ├── popup/          # Popup-specific components
+│   │   └── newtab/         # Dashboard components
+│   ├── stores/             # Pinia Stores
+│   │   ├── workflow.js     # Workflow management
+│   │   ├── user.js         # User data
+│   │   └── main.js         # Main settings
+│   ├── workflowEngine/     # Core Workflow Engine
+│   │   ├── WorkflowManager.js    # Singleton workflow manager
+│   │   ├── WorkflowEngine.js     # Main engine class
+│   │   ├── WorkflowWorker.js     # Worker for block execution
+│   │   └── blocksHandler/        # Block handlers
+│   ├── utils/              # Utility functions
+│   │   ├── message.js      # Message passing system
+│   │   ├── backendApi.js   # Backend API calls
+│   │   └── screenshotManager.js
+│   ├── service/            # Services
+│   │   └── browser-api/    # Browser API abstraction
+│   ├── db/                 # Database (Dexie)
+│   ├── lib/                # Third-party libraries
+│   └── locales/            # Internationalization
+├── manifest.chrome.json    # Chrome manifest
+├── manifest.firefox.json   # Firefox manifest
+└── webpack.config.js       # Build configuration
+```
+
+### Mô tả các thư mục chính:
+
+**Background Script (`src/background/`)**:
+
+- Chạy trong service worker context (Manifest V3)
+- Xử lý events từ browser (tabs, alarms, commands)
+- Quản lý workflow execution và WebSocket connections
+- Không có DOM access, chỉ có API access
+
+**Content Scripts (`src/content/`)**:
+
+- Chạy trong context của web pages
+- Thực thi các blocks trên trang web
+- Có access đến DOM và page context
+- Giao tiếp với background qua message passing
+
+**Popup (`src/popup/`)**:
+
+- UI nhỏ cho extension popup
+- Sử dụng Vue 3 với Composition API
+- Kích thước cố định: 350x500px
+
+**New Tab Dashboard (`src/newtab/`)**:
+
+- Giao diện chính của extension
+- Workflow editor và management
+- Sử dụng Vue Flow cho visual workflow builder
+
+**Workflow Engine (`src/workflowEngine/`)**:
+
+- Core logic cho workflow execution
+- WorkflowManager: Singleton quản lý workflows
+- WorkflowEngine: Engine chính xử lý workflow
+- WorkflowWorker: Worker thực thi từng block
+
+## 2. Quy tắc Code Vue Components
+
+### 2.1 Cấu trúc Component
+
+```vue
+<template>
+  <!-- Template với Tailwind CSS classes -->
+  <div class="ui-component relative">
+    <slot name="header" />
+    <div class="content">
+      <slot />
+    </div>
+  </div>
+</template>
+
+<script setup>
+// Sử dụng Composition API
+import { ref, computed, onMounted } from 'vue';
+import { useComponentId } from '@/composable/componentId';
+
+// Props definition
+const props = defineProps({
+  modelValue: {
+    type: [String, Number, Object],
+    default: '',
+  },
+  disabled: {
+    type: Boolean,
+    default: false,
+  },
+});
+
+// Emits definition
+const emit = defineEmits(['update:modelValue', 'change']);
+
+// Component logic
+const componentId = useComponentId('ui-component');
+</script>
+
+<style scoped>
+/* Component-specific styles */
+</style>
+```
+
+### 2.2 Naming Conventions
+
+- **Component files**: PascalCase (e.g., `UiButton.vue`, `WorkflowEditor.vue`)
+- **Props**: camelCase (e.g., `modelValue`, `isDisabled`)
+- **Events**: kebab-case (e.g., `@update:model-value`)
+- **CSS classes**: Tailwind utility classes, custom classes với prefix `ui-`
+
+### 2.3 UI Component Patterns
+
+- Sử dụng `v-bind="$attrs"` để forward attributes
+- Implement `v-model` với `modelValue` prop và `update:modelValue` event
+- Sử dụng slots cho customization (prepend, append, label)
+- Component ID generation với `useComponentId` composable
+
+### 2.4 State Management
+
+- Sử dụng Pinia stores thay vì Vuex
+- Store files trong `src/stores/`
+- Naming: `use[Name]Store` (e.g., `useWorkflowStore`)
+
+## 3. Giao tiếp qua Event Listeners
+
+### 3.1 Message Passing System
+
+```javascript
+// Sử dụng MessageListener class
+import { MessageListener, sendMessage } from '@/utils/message';
+
+// Tạo listener
+const message = new MessageListener('background');
+
+// Đăng ký handler
+message.on('workflow:execute', async (workflowData, sender) => {
+  // Xử lý message
+  return result;
+});
+
+// Gửi message
+await sendMessage('workflow:execute', data, 'background');
+```
+
+### 3.2 Event Naming Convention
+
+- Format: `[module]:[action]` (e.g., `workflow:execute`, `browser-api:call`)
+- Prefix theo context: `background`, `content`, `popup`, `newtab`
+- Response events: `[action]:response`
+
+### 3.3 Cross-Context Communication
+
+```javascript
+// Background -> Content Script
+await browser.tabs.sendMessage(tabId, {
+  type: 'automa:execute-block',
+  blockData: data,
+});
+
+// Content Script -> Background
+const result = await sendMessage('workflow:execute', data, 'background');
+
+// Popup -> Background
+await sendMessage('open:dashboard', '/workflows', 'background');
+```
+
+### 3.4 Event Handler Patterns
+
+```javascript
+// Async handlers với error handling
+message.on('api:call', async (data, sender) => {
+  try {
+    const result = await apiCall(data);
+    return { success: true, data: result };
+  } catch (error) {
+    console.error('API call failed:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Conditional handlers
+message.on('workflow:execute', (data, sender) => {
+  if (!data.workflowId) {
+    throw new Error('Workflow ID is required');
+  }
+  return executeWorkflow(data);
+});
+```
+
+## 4. Luồng Workflow Execution
+
+### 4.1 Workflow Lifecycle
+
+```
+1. Trigger Event
+   ↓
+2. WorkflowManager.execute()
+   ↓
+3. WorkflowEngine.init()
+   ↓
+4. WorkflowWorker.executeBlock()
+   ↓
+5. Block Handler Execution
+   ↓
+6. Next Block or Completion
+   ↓
+7. WorkflowEngine.destroy()
+```
+
+### 4.2 Core Classes
+
+**WorkflowManager** (Singleton):
+
+```javascript
+class WorkflowManager {
+  static get instance() {
+    if (!this.#_instance) this.#_instance = new WorkflowManager();
+    return this.#_instance;
+  }
+
+  execute(workflowData, options) {
+    const engine = new WorkflowEngine(workflowData, options);
+    engine.init();
+    return engine;
+  }
+}
+```
+
+**WorkflowEngine**:
+
+```javascript
+class WorkflowEngine {
+  constructor(workflow, { states, logger, blocksHandler, options }) {
+    this.workflow = workflow;
+    this.states = states;
+    this.logger = logger;
+    this.blocksHandler = blocksHandler;
+    this.workers = new Map();
+  }
+
+  async init() {
+    // Initialize workflow state
+    // Setup connections map
+    // Start execution from trigger block
+  }
+}
+```
+
+**WorkflowWorker**:
+
+```javascript
+class WorkflowWorker {
+  async executeBlock(block, execParam = {}) {
+    // Execute individual block
+    // Handle errors and retries
+    // Move to next block
+  }
+}
+```
+
+### 4.3 Block Execution Pattern
+
+```javascript
+// Block handler structure
+async function blockHandler(blockData, { refData, prevBlock, ...execParam }) {
+  try {
+    // Block execution logic
+    const result = await performAction(blockData);
+
+    return {
+      data: result,
+      nextBlockId: this.getBlockConnections(block.id),
+      status: 'success',
+    };
+  } catch (error) {
+    // Error handling
+    return {
+      data: error.data || '',
+      nextBlockId: this.getBlockConnections(block.id, 'fallback'),
+      status: 'error',
+    };
+  }
+}
+```
+
+### 4.4 Error Handling Strategy
+
+- **Block Level**: Retry mechanism với configurable retry times
+- **Workflow Level**: Stop, continue, hoặc restart workflow
+- **Global Level**: Notification và logging
+
+### 4.5 State Management
+
+- **Workflow States**: Stored in `WorkflowState` class
+- **Reference Data**: Variables, table data, global data
+- **Logging**: Structured logging với context data
+
+## 5. Coding Standards
+
+### 5.1 JavaScript/ES6+
+
+- Sử dụng ES6+ features (async/await, destructuring, modules)
+- Prefer `const` over `let`, avoid `var`
+- Use template literals cho string interpolation
+- Destructure objects và arrays khi có thể
+
+### 5.2 Vue 3 Best Practices
+
+- Sử dụng Composition API với `<script setup>`
+- Reactive data với `ref()` và `reactive()`
+- Computed properties cho derived state
+- Lifecycle hooks: `onMounted`, `onUnmounted`, etc.
+
+### 5.3 Error Handling
+
+```javascript
+// Consistent error handling pattern
+try {
+  const result = await operation();
+  return { success: true, data: result };
+} catch (error) {
+  console.error('Operation failed:', error);
+  return { success: false, error: error.message };
+}
+```
+
+### 5.4 Async/Await Patterns
+
+```javascript
+// Prefer async/await over Promises
+async function processData() {
+  try {
+    const data = await fetchData();
+    const processed = await processData(data);
+    return processed;
+  } catch (error) {
+    throw new Error(`Processing failed: ${error.message}`);
+  }
+}
+```
+
+### 5.5 File Organization
+
+- Một class/component per file
+- Export default cho main export
+- Named exports cho utilities
+- Index files cho re-exports
+
+### 5.6 Comments và Documentation
+
+```javascript
+/**
+ * Executes a workflow block with error handling and retry logic
+ * @param {Object} block - Block configuration
+ * @param {Object} execParam - Execution parameters
+ * @returns {Promise<Object>} Execution result
+ */
+async function executeBlock(block, execParam = {}) {
+  // Implementation
+}
+```
+
+## 6. Testing và Debugging
+
+### 6.1 Debug Mode
+
+- Enable debug mode trong workflow settings
+- Console logging với structured data
+- Screenshot capture on errors
+- Breakpoint support trong testing mode
+
+### 6.2 Error Reporting
+
+- Structured error objects với context
+- Error categorization (network, DOM, logic)
+- User-friendly error messages
+- Automatic error reporting to backend
+
+### 6.3 Performance Monitoring
+
+- Block execution timing
+- Memory usage tracking
+- Workflow completion metrics
+- Resource cleanup verification
+
+## 7. Security Considerations
+
+### 7.1 Content Security Policy (CSP)
+
+- Handle CSP violations gracefully
+- Use debugger API khi scripting bị block
+- Sanitize user inputs
+- Validate external data
+
+### 7.2 Permission Management
+
+- Request permissions only when needed
+- Handle permission denials gracefully
+- Provide clear permission explanations
+- Implement permission fallbacks
+
+### 7.3 Data Protection
+
+- Encrypt sensitive data trong storage
+- Validate data trước khi process
+- Sanitize outputs
+- Implement data retention policies
+
+## 8. Performance Guidelines
+
+### 8.1 Memory Management
+
+- Clean up event listeners
+- Remove unused references
+- Use WeakMap cho temporary data
+- Monitor memory usage
+
+### 8.2 Execution Optimization
+
+- Batch operations khi có thể
+- Use requestIdleCallback cho non-critical tasks
+- Implement proper caching
+- Optimize DOM operations
+
+### 8.3 Bundle Size
+
+- Tree-shake unused code
+- Lazy load components
+- Optimize images và assets
+- Monitor bundle size
+
+---

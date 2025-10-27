@@ -1,5 +1,6 @@
 import dbStorage from '@/db/storage';
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
+import ScreenshotManager from '@/utils/screenshotManager';
 import {
   isObject,
   objectHasKey,
@@ -307,20 +308,19 @@ class WorkflowWorker {
       if (block.label === 'loop-breakpoint') description = block.data.loopId;
       else if (block.label === 'block-package') description = block.data.name;
 
-      if (block.isScreenShop)
-        this.engine.addLogHistory({
-          description,
-          prevBlockData,
-          type: status,
-          name: block.label,
-          blockId: block.id,
-          workerId: this.id,
-          timestamp: startExecuteTime,
-          activeTabUrl: this.activeTab?.url,
-          replacedValue: replacedBlock.replacedValue,
-          duration: Math.round(Date.now() - startExecuteTime),
-          ...obj,
-        });
+      this.engine.addLogHistory({
+        description,
+        prevBlockData,
+        type: status,
+        name: block.label,
+        blockId: block.id,
+        workerId: this.id,
+        timestamp: startExecuteTime,
+        activeTabUrl: this.activeTab?.url,
+        replacedValue: replacedBlock.replacedValue,
+        duration: Math.round(Date.now() - startExecuteTime),
+        ...obj,
+      });
     };
 
     const executeBlocks = (blocks, data) => {
@@ -369,14 +369,22 @@ class WorkflowWorker {
         }
       } else {
         // Workflow completed successfully - take final screenshot
-        await this.takeScreenshotOnSuccess(block);
+        await ScreenshotManager.takeScreenshotOnSuccess(
+          block,
+          this.activeTab,
+          this.engine.id
+        );
         this.engine.destroyWorker(this.id);
       }
     } catch (error) {
       console.error(error);
-
       // Take screenshot on error
-      await this.takeScreenshotOnError(error, block);
+      await ScreenshotManager.takeScreenshotOnError(
+        error,
+        block,
+        this.activeTab,
+        this.engine.id
+      );
 
       const errorLogData = {
         message: error.message,
@@ -561,203 +569,6 @@ class WorkflowWorker {
       }
 
       throw error;
-    }
-  }
-
-  /**
-   * Take screenshot on workflow success (final step)
-   * @param {Object} block - The final block that completed successfully
-   */
-  async takeScreenshotOnSuccess(block) {
-    try {
-      console.log('📸 [WorkflowWorker] Taking screenshot on success:', {
-        blockId: block.id,
-        blockLabel: block.label,
-        workflowId: this.engine.id,
-      });
-
-      // Check if we have an active tab
-      if (!this.activeTab || !this.activeTab.id) {
-        console.warn('[WorkflowWorker] No active tab for success screenshot');
-        return;
-      }
-
-      // Take screenshot using Chrome API with optimized quality
-      const screenshotDataUrl = await BrowserAPIService.tabs.captureVisibleTab(
-        this.activeTab.windowId,
-        { format: 'jpeg', quality: 85 }
-      );
-
-      if (!screenshotDataUrl) {
-        console.warn('[WorkflowWorker] Failed to capture success screenshot');
-        return;
-      }
-
-      // Compress screenshot if too large
-      const compressedScreenshot = await this.compressScreenshot(
-        screenshotDataUrl
-      );
-
-      // Send screenshot to backend
-      await this.sendScreenshotToBackend({
-        workflowId: this.engine.id,
-        blockId: block.id,
-        blockLabel: block.label,
-        errorMessage: null,
-        errorStack: null,
-        status: 'success',
-        timestamp: Date.now(),
-        screenshotDataUrl: compressedScreenshot,
-        activeTabUrl: this.activeTab.url,
-      });
-    } catch (screenshotError) {
-      console.error(
-        '[WorkflowWorker] Error taking success screenshot:',
-        screenshotError
-      );
-    }
-  }
-
-  /**
-   * Take screenshot on error and send to backend
-   * @param {Error} error - The error that occurred
-   * @param {Object} block - The block that caused the error
-   */
-  async takeScreenshotOnError(error, block) {
-    try {
-      console.log('📸 [WorkflowWorker] Taking screenshot on error:', {
-        blockId: block.id,
-        blockLabel: block.label,
-        errorMessage: error.message,
-      });
-
-      // Check if we have an active tab
-      if (!this.activeTab || !this.activeTab.id) {
-        console.warn('[WorkflowWorker] No active tab for screenshot');
-        return;
-      }
-
-      // Take screenshot using Chrome API with optimized quality
-      const screenshotDataUrl = await BrowserAPIService.tabs.captureVisibleTab(
-        this.activeTab.windowId,
-        { format: 'jpeg', quality: 85 }
-      );
-
-      if (!screenshotDataUrl) {
-        console.warn('[WorkflowWorker] Failed to capture screenshot');
-        return;
-      }
-
-      // Compress screenshot if too large
-      const compressedScreenshot = await this.compressScreenshot(
-        screenshotDataUrl
-      );
-
-      // Send screenshot to backend
-      await this.sendScreenshotToBackend({
-        workflowId: this.engine.id,
-        blockId: block.id,
-        blockLabel: block.label,
-        errorMessage: error.message,
-        errorStack: error.stack,
-        status: 'error',
-        timestamp: Date.now(),
-        screenshotDataUrl: compressedScreenshot,
-        activeTabUrl: this.activeTab.url,
-      });
-    } catch (screenshotError) {
-      console.error(
-        '[WorkflowWorker] Error taking screenshot:',
-        screenshotError
-      );
-    }
-  }
-
-  /**
-   * Compress screenshot to reduce file size
-   * @param {string} dataUrl - Base64 data URL of screenshot
-   * @returns {string} - Compressed base64 data URL
-   */
-  async compressScreenshot(dataUrl) {
-    try {
-      // Extract base64 data
-      const base64Data = dataUrl.split(',')[1];
-      const imageSize = (base64Data.length * 3) / 4; // Approximate size in bytes
-
-      console.log(
-        '📏 [WorkflowWorker] Original screenshot size:',
-        Math.round(imageSize / 1024),
-        'KB'
-      );
-
-      // If image is smaller than 1MB, return as is
-      if (imageSize < 1024 * 1024) {
-        console.log(
-          '✅ [WorkflowWorker] Screenshot size OK, no compression needed'
-        );
-        return dataUrl;
-      }
-
-      // For larger images, we could implement canvas compression here
-      // For now, just return the original (backend will handle the large payload)
-      console.log(
-        '⚠️ [WorkflowWorker] Large screenshot detected, sending as-is'
-      );
-      return dataUrl;
-    } catch (error) {
-      console.error('[WorkflowWorker] Error compressing screenshot:', error);
-      return dataUrl; // Return original if compression fails
-    }
-  }
-
-  /**
-   * Send screenshot to backend
-   * @param {Object} data - Screenshot data
-   */
-  async sendScreenshotToBackend(data) {
-    try {
-      // Get WebSocket config to determine backend URL
-      const { wsConfig } = await BrowserAPIService.storage.local.get(
-        'wsConfig'
-      );
-      if (!wsConfig || !wsConfig.url) {
-        console.warn(
-          '[WorkflowWorker] No WebSocket config found, skipping screenshot upload'
-        );
-        return;
-      }
-
-      // Extract base URL from WebSocket URL
-      const baseUrl = wsConfig.url
-        .replace('ws://', 'http://')
-        .replace('wss://', 'https://');
-      const apiUrl = `${baseUrl}/api/screenshot`;
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        console.log(
-          '✅ [WorkflowWorker] Screenshot sent to backend successfully:',
-          result.filename
-        );
-      } else {
-        console.error(
-          '❌ [WorkflowWorker] Failed to send screenshot to backend:',
-          response.status
-        );
-      }
-    } catch (error) {
-      console.error(
-        '❌ [WorkflowWorker] Error sending screenshot to backend:',
-        error
-      );
     }
   }
 }

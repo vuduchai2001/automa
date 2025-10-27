@@ -3,3 +3,8 @@ node_modules/
 *.log
 .DS_Store
 
+logs/*
+!logs/.gitkeep
+
+images/*
+!images/.gitkeep

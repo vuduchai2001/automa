@@ -645,10 +645,28 @@ app.post('/api/workflow-log', (req, res) => {
       globalData,
     };
     
-    // Generate filename with timestamp
-    const date = new Date(timestamp);
-    const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
-    const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-'); // HH-MM-SS
+    // Generate filename with timestamp - handle invalid dates gracefully
+    let date;
+    let dateStr, timeStr;
+    
+    try {
+      date = timestamp ? new Date(timestamp) : new Date();
+      
+      // Check if date is valid
+      if (isNaN(date.getTime())) {
+        console.warn('⚠️  [Backend] Invalid timestamp, using current date:', timestamp);
+        date = new Date();
+      }
+      
+      dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
+      timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-'); // HH-MM-SS
+    } catch (dateError) {
+      console.warn('⚠️  [Backend] Error parsing timestamp:', dateError);
+      date = new Date();
+      dateStr = date.toISOString().split('T')[0];
+      timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-');
+    }
+    
     const filename = `workflow-${workflowId}-${dateStr}-${timeStr}.json`;
     const filepath = path.join(logsDir, filename);
     
