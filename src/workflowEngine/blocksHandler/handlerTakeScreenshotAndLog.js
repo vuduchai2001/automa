@@ -106,30 +106,54 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
   const saveToComputer =
     typeof data.saveToComputer === 'undefined' || data.saveToComputer;
 
+  // Get screenshot types - support both new array format and legacy single type
+  const worker = this;
+
+  let screenshotTypes = [];
+  if (Array.isArray(data.types) && data.types.length > 0) {
+    screenshotTypes = data.types;
+  } else if (data.type) {
+    screenshotTypes = [data.type];
+  } else {
+    // No types selected, skip screenshot
+    return {
+      data: '',
+      nextBlockId: this.getBlockConnections(id),
+    };
+  }
+
+  // Store reference to this context
+
   try {
-    let screenshot = null;
     const options = {
       quality: data.quality,
       format: data.ext || 'png',
     };
 
     // Get previous step from workflow history or prevBlock
-    const prevStep = getPreviousStep(this.engine, id, prevBlock);
+    const prevStep = getPreviousStep(worker.engine, id, prevBlock);
 
-    const saveScreenshot = async (dataUrl) => {
-      if (data.saveToColumn) this.addDataToColumn(data.dataColumn, dataUrl);
+    const saveScreenshot = async (dataUrl, type) => {
+      const filename = data.fileName
+        ? `${data.fileName}_${type}`
+        : `Screenshot_${type}`;
+
+      if (data.saveToColumn) worker.addDataToColumn(data.dataColumn, dataUrl);
       if (saveToComputer)
         await saveImage({
-          filename: data.fileName,
+          filename,
           uri: dataUrl,
           ext: data.ext,
         });
       if (data.assignVariable)
-        await this.setVariable(data.variableName, dataUrl);
+        await worker.setVariable(`${data.variableName}_${type}`, dataUrl);
     };
 
+    // Process each screenshot type
+    const screenshots = {};
+
     if (data.captureActiveTab) {
-      if (!this.activeTab.id) {
+      if (!worker.activeTab.id) {
         throw new Error('no-tab');
       }
 
@@ -140,7 +164,7 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
 
         if (isChrome) {
           const currentTab = await BrowserAPIService.tabs.get(
-            this.activeTab.id
+            worker.activeTab.id
           );
           result = await BrowserAPIService.tabs.captureVisibleTab(
             currentTab.windowId,
@@ -148,7 +172,7 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
           );
         } else {
           result = await BrowserAPIService.tabs.captureTab(
-            this.activeTab.id,
+            worker.activeTab.id,
             options
           );
         }
@@ -162,61 +186,98 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
           url: '*://*/*',
         });
 
-        if (this.windowId) {
-          await BrowserAPIService.windows.update(this.windowId, {
+        if (worker.windowId) {
+          await BrowserAPIService.windows.update(worker.windowId, {
             focused: true,
           });
         }
       }
 
-      await BrowserAPIService.tabs.update(this.activeTab.id, { active: true });
-      await waitTabLoaded({ tabId: this.activeTab.id, listenError: true });
+      await BrowserAPIService.tabs.update(worker.activeTab.id, {
+        active: true,
+      });
+      await waitTabLoaded({ tabId: worker.activeTab.id, listenError: true });
 
-      screenshot = await (data.fullPage ||
-      ['element', 'fullpage'].includes(data.type)
-        ? this._sendMessageToTab({
-            label,
-            options,
-            data: {
-              type: data.type,
-              selector: data.selector,
+      // Capture screenshots for each selected type
+      for (const type of screenshotTypes) {
+        let screenshot = null;
+
+        if (type === 'element') {
+          screenshot = await BrowserAPIService.tabs.sendMessage(
+            worker.activeTab.id,
+            {
+              label,
+              options,
+              data: {
+                type: 'element',
+                selector: data.selector,
+              },
+              tabId: worker.activeTab.id,
             },
-            tabId: this.activeTab.id,
-          })
-        : captureTab());
+            { frameId: worker.activeTab.frameId }
+          );
+        } else if (type === 'fullpage') {
+          screenshot = await BrowserAPIService.tabs.sendMessage(
+            worker.activeTab.id,
+            {
+              label,
+              options,
+              data: {
+                type: 'fullpage',
+              },
+              tabId: worker.activeTab.id,
+            },
+            { frameId: worker.activeTab.frameId }
+          );
+        } else if (type === 'page') {
+          screenshot = await captureTab();
+        }
+
+        if (screenshot) {
+          screenshots[type] = screenshot;
+          await saveScreenshot(screenshot, type);
+        }
+      }
 
       if (tab) {
         await BrowserAPIService.windows.update(tab.windowId, { focused: true });
         await BrowserAPIService.tabs.update(tab.id, { active: true });
       }
-
-      await saveScreenshot(screenshot);
-    } else {
-      screenshot = await BrowserAPIService.tabs.captureVisibleTab(options);
-
-      await saveScreenshot(screenshot);
+    } else if (screenshotTypes.includes('page')) {
+      // For non-active tab capture, only support page type
+      const screenshot = await BrowserAPIService.tabs.captureVisibleTab(
+        options
+      );
+      screenshots.page = screenshot;
+      await saveScreenshot(screenshot, 'page');
     }
 
-    // Send screenshot to backend for step logging
-    await sendScreenshotToBackend({
-      screenshot,
-      blockId: id,
-      blockLabel: label,
-      tabUrl: this.activeTab?.url || 'unknown',
-      tabTitle: this.activeTab?.title || 'unknown',
-      timestamp: Date.now(),
-      workflowId: this.engine?.id || 'unknown',
-      description: data.description || '',
-      screenshotType: data.type || 'page',
-      prevStep,
-    });
+    // Send screenshots to backend for step logging
+    for (const [type, screenshot] of Object.entries(screenshots)) {
+      await sendScreenshotToBackend({
+        screenshot,
+        blockId: id,
+        blockLabel: label,
+        tabUrl: worker.activeTab?.url || 'unknown',
+        tabTitle: worker.activeTab?.title || 'unknown',
+        timestamp: Date.now(),
+        workflowId: worker.engine?.id || 'unknown',
+        description: data.description || '',
+        screenshotType: type,
+        prevStep,
+      });
+    }
+
+    // Return the first screenshot as main data (for backward compatibility)
+    const mainScreenshot = screenshots[screenshotTypes[0]] || screenshots.page;
 
     return {
-      data: screenshot,
-      nextBlockId: this.getBlockConnections(id),
+      data: mainScreenshot,
+      nextBlockId: worker.getBlockConnections(id),
     };
   } catch (error) {
-    if (data.type === 'element') error.data = { selector: data.selector };
+    if (screenshotTypes.includes('element'))
+      error.data = { selector: data.selector };
 
     throw error;
   }

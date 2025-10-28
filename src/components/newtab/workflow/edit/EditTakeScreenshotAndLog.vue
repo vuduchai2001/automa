@@ -6,18 +6,26 @@
       class="w-full"
       @change="updateData({ description: $event })"
     />
-    <ui-select
-      :model-value="data.type"
-      :label="t('workflow.blocks.take-screenshot-and-log.types.title')"
-      class="mt-2 w-full"
-      @change="updateData({ type: $event })"
-    >
-      <option v-for="type in types" :key="type" :value="type">
-        {{ t(`workflow.blocks.take-screenshot-and-log.types.${type}`) }}
-      </option>
-    </ui-select>
+    <div class="mt-2">
+      <p class="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+        {{ t('workflow.blocks.take-screenshot-and-log.types.title') }}
+      </p>
+      <div class="space-y-3">
+        <ui-checkbox
+          v-for="type in types"
+          :key="type"
+          :model-value="isTypeSelected(type)"
+          class="block w-full"
+          @change="toggleType(type, $event)"
+        >
+          <span class="ml-2">{{
+            t(`workflow.blocks.take-screenshot-and-log.types.${type}`)
+          }}</span>
+        </ui-checkbox>
+      </div>
+    </div>
     <ui-input
-      v-if="data.type === 'element'"
+      v-if="isTypeSelected('element')"
       :model-value="data.selector"
       :label="t(`workflow.blocks.base.findElement.options.cssSelector`)"
       class="mt-2 w-full"
@@ -131,6 +139,7 @@ const types = ['page', 'fullpage', 'element'];
 function updateData(value) {
   emit('update:data', { ...props.data, ...value });
 }
+
 function updateQuality({ target }) {
   let quality = +target.value;
 
@@ -140,19 +149,60 @@ function updateQuality({ target }) {
   updateData({ quality });
 }
 
+// Multi-select functions
+function isTypeSelected(type) {
+  if (Array.isArray(props.data.types)) {
+    return props.data.types.includes(type);
+  }
+  if (props.data.type) {
+    return props.data.type === type;
+  }
+  return false;
+}
+
+function toggleType(type, isSelected) {
+  let currentTypes = [];
+  if (Array.isArray(props.data.types)) {
+    currentTypes = [...props.data.types];
+  } else if (props.data.type) {
+    currentTypes = [props.data.type];
+  }
+
+  if (isSelected) {
+    if (!currentTypes.includes(type)) {
+      currentTypes.push(type);
+    }
+  } else {
+    const index = currentTypes.indexOf(type);
+    if (index > -1) {
+      currentTypes.splice(index, 1);
+    }
+  }
+
+  updateData({ types: currentTypes });
+}
+
 onMounted(() => {
   if (!objectHasKey(props.data, 'saveToComputer')) {
     updateData({ saveToComputer: true, saveToColumn: false });
   }
 
-  if (!objectHasKey(props.data, 'type')) {
-    const type = 'page';
+  // Handle migration from old single type to new multi-type format
+  if (!objectHasKey(props.data, 'types')) {
+    let initialTypes = [];
 
-    if (props.data.fullPage) {
-      type === 'fullpage';
+    if (props.data.type) {
+      // Migrate from old single type format
+      initialTypes = [props.data.type];
+    } else if (props.data.fullPage) {
+      // Handle legacy fullPage flag
+      initialTypes = ['fullpage'];
     }
+    // If no legacy data, let shared.js default handle it
 
-    updateData({ type, fullPage: false });
+    if (initialTypes.length > 0) {
+      updateData({ types: initialTypes });
+    }
   }
 });
 </script>

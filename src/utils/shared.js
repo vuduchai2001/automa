@@ -309,7 +309,8 @@ export const tasks = {
       dataColumn: '',
       variableName: '',
       selector: '',
-      fullPage: false,
+      types: [], // New: array of screenshot types (no default)
+      fullPage: false, // Legacy: kept for backward compatibility
       saveToColumn: false,
       saveToComputer: true,
       assignVariable: false,

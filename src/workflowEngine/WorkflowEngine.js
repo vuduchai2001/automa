@@ -127,7 +127,8 @@ class WorkflowEngine {
         return;
       }
 
-      console.log('before execute', this.state, '\n', this.workflow);
+      // eslint-disable-next-line no-console
+      console.log('before execute', this.states, '\n', this.workflow);
 
       const { nodes, edges } = this.workflow.drawflow;
       if (!nodes || nodes.length === 0) {
@@ -306,8 +307,6 @@ class WorkflowEngine {
       });
 
       this.addRefDataSnapshot('variables');
-
-      console.log('this.state', this.state);
 
       await this.states.add(this.id, {
         id: this.id,

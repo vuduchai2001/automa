@@ -15,6 +15,7 @@ import renderString from './templating/renderString';
 
 function blockExecutionWrapper(blockHandler, blockData) {
   return new Promise((resolve, reject) => {
+    // Debug for take-screenshot-and-log
     let timeout = null;
     const timeoutMs = blockData?.settings?.blockTimeout;
     if (timeoutMs && timeoutMs > 0) {
