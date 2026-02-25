@@ -808,8 +808,13 @@
         "types": {
           "title": "Take a screenshot of",
           "page": "A page",
-          "fullpage": "A full page",
-          "element": "An element"
+          "fullpage": "A full page"
+        },
+        "htmlCapture": {
+          "title": "HTML Capture",
+          "enabled": "Capture HTML content",
+          "description": "Crawl HTML content. If selector is provided, capture that element. Otherwise, capture full page HTML.",
+          "noDownload": "Note: HTML file will only be saved to computer if 'Save Screenshot to computer' is enabled. Otherwise, it will only be sent to backend and stored in variables."
         }
       },
       "switch-to": {

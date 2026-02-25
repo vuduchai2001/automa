@@ -12,7 +12,7 @@
       </p>
       <div class="space-y-3">
         <ui-checkbox
-          v-for="type in types"
+          v-for="type in screenshotTypes"
           :key="type"
           :model-value="isTypeSelected(type)"
           class="block w-full"
@@ -24,8 +24,37 @@
         </ui-checkbox>
       </div>
     </div>
+
+    <div class="mt-4">
+      <p class="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+        {{ t('workflow.blocks.take-screenshot-and-log.htmlCapture.title') }}
+      </p>
+      <ui-checkbox
+        :model-value="data.captureHTML"
+        class="block w-full"
+        @change="updateData({ captureHTML: $event })"
+      >
+        <span class="ml-2">{{
+          t('workflow.blocks.take-screenshot-and-log.htmlCapture.enabled')
+        }}</span>
+      </ui-checkbox>
+      <p
+        v-if="data.captureHTML"
+        class="mt-1 text-xs text-gray-500 dark:text-gray-400"
+      >
+        {{
+          t('workflow.blocks.take-screenshot-and-log.htmlCapture.description')
+        }}
+        <br />
+        <span v-if="!data.saveToComputer" class="text-orange-500">
+          {{
+            t('workflow.blocks.take-screenshot-and-log.htmlCapture.noDownload')
+          }}
+        </span>
+      </p>
+    </div>
     <ui-input
-      v-if="isTypeSelected('element')"
+      v-if="data.captureHTML"
       :model-value="data.selector"
       :label="t(`workflow.blocks.base.findElement.options.cssSelector`)"
       class="mt-2 w-full"
@@ -106,14 +135,48 @@
     >
       {{ t('workflow.variables.assign') }}
     </ui-checkbox>
-    <ui-input
-      v-if="data.assignVariable"
-      :model-value="data.variableName"
-      :placeholder="t('workflow.variables.name')"
-      :title="t('workflow.variables.name')"
-      class="mt-1 w-full"
-      @change="updateData({ variableName: $event })"
-    />
+
+    <!-- Multiple variable inputs based on selected types -->
+    <div v-if="data.assignVariable" class="mt-2 space-y-2">
+      <div
+        v-for="(type, index) in getSelectedTypes()"
+        :key="type"
+        class="flex items-center space-x-2"
+      >
+        <ui-input
+          :model-value="getVariableName(type, index)"
+          :placeholder="`${t('workflow.variables.name')} for ${t(
+            `workflow.blocks.take-screenshot-and-log.types.${type}`
+          )}`"
+          :title="`${t('workflow.variables.name')} for ${t(
+            `workflow.blocks.take-screenshot-and-log.types.${type}`
+          )}`"
+          class="flex-1"
+          @change="updateVariableName(type, index, $event)"
+        />
+        <span class="text-sm text-gray-500 dark:text-gray-400">
+          {{ t(`workflow.blocks.take-screenshot-and-log.types.${type}`) }}
+        </span>
+      </div>
+
+      <!-- HTML capture variable -->
+      <div v-if="data.captureHTML" class="flex items-center space-x-2">
+        <ui-input
+          :model-value="data.htmlVariableName || 'htmlContent'"
+          :placeholder="`${t('workflow.variables.name')} for HTML`"
+          :title="`${t('workflow.variables.name')} for HTML`"
+          class="flex-1"
+          @change="updateData({ htmlVariableName: $event })"
+        />
+        <span class="text-sm text-gray-500 dark:text-gray-400">
+          {{
+            data.selector && data.selector.trim()
+              ? 'Element HTML'
+              : 'Full Page HTML'
+          }}
+        </span>
+      </div>
+    </div>
   </div>
 </template>
 <script setup>
@@ -134,7 +197,7 @@ const emit = defineEmits(['update:data']);
 const { t } = useI18n();
 const workflow = inject('workflow');
 
-const types = ['page', 'fullpage', 'element'];
+const screenshotTypes = ['page', 'fullpage'];
 
 function updateData(value) {
   emit('update:data', { ...props.data, ...value });
@@ -182,9 +245,38 @@ function toggleType(type, isSelected) {
   updateData({ types: currentTypes });
 }
 
+// Get selected types for variable assignment
+function getSelectedTypes() {
+  if (Array.isArray(props.data.types)) {
+    return props.data.types;
+  }
+  if (props.data.type) {
+    return [props.data.type];
+  }
+  return [];
+}
+
+// Get variable name for a specific type
+function getVariableName(type, index) {
+  const variableNames = props.data.variableNames || {};
+  return variableNames[type] || `${type}_${index + 1}`;
+}
+
+// Update variable name for a specific type
+function updateVariableName(type, index, value) {
+  const variableNames = { ...(props.data.variableNames || {}) };
+  variableNames[type] = value;
+  updateData({ variableNames });
+}
+
 onMounted(() => {
   if (!objectHasKey(props.data, 'saveToComputer')) {
     updateData({ saveToComputer: true, saveToColumn: false });
+  }
+
+  // Initialize captureHTML if not set
+  if (!objectHasKey(props.data, 'captureHTML')) {
+    updateData({ captureHTML: false });
   }
 
   // Handle migration from old single type to new multi-type format

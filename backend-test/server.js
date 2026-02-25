@@ -813,26 +813,53 @@ app.post('/api/screenshot-step', (req, res) => {
     timestamp, 
     workflowId, 
     description, 
-    screenshotType 
+    screenshotType,
+    elementHTML,
+    pageHTML,
+    htmlContent
   } = req.body;
   
-  if (!screenshot || !workflowId) {
-    return res.status(400).json({ error: 'screenshot and workflowId are required' });
+  if (!workflowId) {
+    return res.status(400).json({ error: 'workflowId is required' });
   }
   
   try {
-    // Extract base64 data from data URL
-    const base64Data = screenshot.replace(/^data:image\/[a-z]+;base64,/, '');
-    
-    // Generate filename with timestamp
     const date = new Date(timestamp);
     const dateStr = date.toISOString().split('T')[0];
     const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-');
-    const filename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.jpg`;
-    const filepath = path.join(imagesDir, filename);
     
-    // Write image file
-    fs.writeFileSync(filepath, base64Data, 'base64');
+    let filename = '';
+    let filepath = '';
+    
+    // Handle screenshot if provided
+    if (screenshot && screenshotType !== 'html') {
+      // Extract base64 data from data URL
+      const base64Data = screenshot.replace(/^data:image\/[a-z]+;base64,/, '');
+      
+      // Generate filename with timestamp
+      filename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.jpg`;
+      filepath = path.join(imagesDir, filename);
+      
+      // Write image file
+      fs.writeFileSync(filepath, base64Data, 'base64');
+    }
+    
+    // Handle HTML content if provided
+    if (htmlContent || elementHTML || pageHTML) {
+      const htmlFilename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.txt`;
+      const htmlFilepath = path.join(imagesDir, htmlFilename);
+      
+      // Use htmlContent if available, otherwise fallback to elementHTML or pageHTML
+      const contentToSave = htmlContent || elementHTML || pageHTML || '';
+      fs.writeFileSync(htmlFilepath, contentToSave, 'utf8');
+      
+      // Update filename to include HTML file
+      if (filename) {
+        filename += `, ${htmlFilename}`;
+      } else {
+        filename = htmlFilename;
+      }
+    }
     
     // Create metadata file
     const metadata = {
@@ -847,6 +874,8 @@ app.post('/api/screenshot-step', (req, res) => {
       prevStep: req.body.prevStep || null,
       filename,
       filepath,
+      hasScreenshot: !!(screenshot && screenshotType !== 'html'),
+      hasHTML: !!(htmlContent || elementHTML || pageHTML),
       receivedAt: new Date().toISOString(),
     };
     
@@ -854,26 +883,30 @@ app.post('/api/screenshot-step', (req, res) => {
     const metadataFilepath = path.join(imagesDir, metadataFilename);
     fs.writeFileSync(metadataFilepath, JSON.stringify(metadata, null, 2));
     
-    console.log('📸 [Backend] Step screenshot saved:', {
+    console.log('📸 [Backend] Step data saved:', {
       workflowId,
       blockId,
       blockLabel,
       filename,
+      hasScreenshot: !!(screenshot && screenshotType !== 'html'),
+      hasHTML: !!(htmlContent || elementHTML || pageHTML),
       tabTitle: tabTitle?.substring(0, 30) + '...'
     });
     
     res.json({
       success: true,
-      message: 'Step screenshot saved successfully',
+      message: 'Step data saved successfully',
       filename,
       metadataFilename,
       workflowId,
       blockId,
+      hasScreenshot: !!(screenshot && screenshotType !== 'html'),
+      hasHTML: !!(htmlContent || elementHTML || pageHTML)
     });
   } catch (error) {
-    console.error('❌ [Backend] Error saving step screenshot:', error);
+    console.error('❌ [Backend] Error saving step data:', error);
     res.status(500).json({
-      error: 'Failed to save step screenshot',
+      error: 'Failed to save step data',
       message: error.message,
     });
   }

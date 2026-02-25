@@ -68,6 +68,27 @@ async function saveImage({ filename, uri, ext }) {
   image.src = uri;
 }
 
+async function saveTextFile({ filename, content }) {
+  const hasDownloadAccess = await BrowserAPIService.permissions.contains({
+    permissions: ['downloads'],
+  });
+  const name = `${filename || 'HTML'}.txt`;
+  const blob = new Blob([content], { type: 'text/plain' });
+  const dataUrl = URL.createObjectURL(blob);
+
+  if (hasDownloadAccess) {
+    await BrowserAPIService.downloads.download({
+      url: dataUrl,
+      filename: name,
+    });
+    URL.revokeObjectURL(dataUrl);
+    return;
+  }
+
+  // Fallback: save using fileSaver
+  fileSaver(name, dataUrl);
+}
+
 /**
  * Send screenshot to backend for step logging
  * @param {Object} data - Screenshot and metadata
@@ -114,8 +135,13 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
     screenshotTypes = data.types;
   } else if (data.type) {
     screenshotTypes = [data.type];
-  } else {
-    // No types selected, skip screenshot
+  }
+
+  // Check if we need to capture HTML
+  const captureHTML = data.captureHTML || false;
+
+  // If no screenshot types and no HTML capture, skip
+  if (screenshotTypes.length === 0 && !captureHTML) {
     return {
       data: '',
       nextBlockId: this.getBlockConnections(id),
@@ -145,12 +171,18 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
           uri: dataUrl,
           ext: data.ext,
         });
-      if (data.assignVariable)
-        await worker.setVariable(`${data.variableName}_${type}`, dataUrl);
+      if (data.assignVariable) {
+        // Use specific variable name for this type, or fallback to default
+        const variableName =
+          data.variableNames?.[type] ||
+          `${data.variableName || 'screenshot'}_${type}`;
+        await worker.setVariable(variableName, dataUrl);
+      }
     };
 
     // Process each screenshot type
     const screenshots = {};
+    const htmlDataMap = new Map();
 
     if (data.captureActiveTab) {
       if (!worker.activeTab.id) {
@@ -202,25 +234,13 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
       for (const type of screenshotTypes) {
         let screenshot = null;
 
-        if (type === 'element') {
+        if (type === 'fullpage') {
           screenshot = await BrowserAPIService.tabs.sendMessage(
             worker.activeTab.id,
             {
-              label,
-              options,
-              data: {
-                type: 'element',
-                selector: data.selector,
-              },
-              tabId: worker.activeTab.id,
-            },
-            { frameId: worker.activeTab.frameId }
-          );
-        } else if (type === 'fullpage') {
-          screenshot = await BrowserAPIService.tabs.sendMessage(
-            worker.activeTab.id,
-            {
-              label,
+              isBlock: true,
+              name: 'take-screenshot',
+              label: 'take-screenshot',
               options,
               data: {
                 type: 'fullpage',
@@ -239,6 +259,88 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
         }
       }
 
+      // Handle HTML-only capture (no screenshot)
+      if (captureHTML) {
+        let elementHTML = null;
+        let pageHTML = null;
+        let htmlContent = null;
+
+        // If selector is provided, try to get specific element
+        if (data.selector && data.selector.trim()) {
+          try {
+            const result = await BrowserAPIService.tabs.sendMessage(
+              worker.activeTab.id,
+              {
+                isBlock: true,
+                name: 'take-screenshot',
+                label: 'take-screenshot',
+                options,
+                data: {
+                  type: 'element',
+                  selector: data.selector,
+                },
+                tabId: worker.activeTab.id,
+              },
+              { frameId: worker.activeTab.frameId }
+            );
+
+            if (typeof result === 'object' && result.elementHTML) {
+              elementHTML = result.elementHTML;
+              pageHTML = result.pageHTML;
+              htmlContent = elementHTML; // Use element HTML as main content
+            }
+          } catch (error) {
+            console.warn(
+              'Failed to capture element HTML, falling back to full page:',
+              error
+            );
+          }
+        }
+
+        // If no selector provided or element not found, get full page HTML
+        if (!htmlContent) {
+          try {
+            const result = await BrowserAPIService.tabs.sendMessage(
+              worker.activeTab.id,
+              {
+                isBlock: true,
+                name: 'get-page-html',
+                label: 'get-page-html',
+                data: {},
+                tabId: worker.activeTab.id,
+              },
+              { frameId: worker.activeTab.frameId }
+            );
+
+            if (result && result.pageHTML) {
+              pageHTML = result.pageHTML;
+              htmlContent = pageHTML;
+            }
+          } catch (error) {
+            console.warn('Failed to capture page HTML:', error);
+          }
+        }
+
+        if (htmlContent) {
+          // Store HTML for backend
+          htmlDataMap.set('html', { elementHTML, pageHTML, htmlContent });
+
+          // Save HTML file only if saveToComputer is enabled
+          if (saveToComputer) {
+            const filename = data.fileName
+              ? `${data.fileName}_html`
+              : 'HTML_content';
+            await saveTextFile({ filename, content: htmlContent });
+          }
+
+          // Assign HTML to variables if enabled
+          if (data.assignVariable) {
+            const htmlVariableName = data.htmlVariableName || 'htmlContent';
+            await worker.setVariable(htmlVariableName, htmlContent);
+          }
+        }
+      }
+
       if (tab) {
         await BrowserAPIService.windows.update(tab.windowId, { focused: true });
         await BrowserAPIService.tabs.update(tab.id, { active: true });
@@ -254,7 +356,7 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
 
     // Send screenshots to backend for step logging
     for (const [type, screenshot] of Object.entries(screenshots)) {
-      await sendScreenshotToBackend({
+      const backendData = {
         screenshot,
         blockId: id,
         blockLabel: label,
@@ -265,7 +367,34 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
         description: data.description || '',
         screenshotType: type,
         prevStep,
-      });
+      };
+
+      // HTML data is now handled separately in HTML-only capture
+
+      await sendScreenshotToBackend(backendData);
+    }
+
+    // Send HTML-only data to backend if no screenshots
+    if (captureHTML && htmlDataMap.has('html')) {
+      const htmlData = htmlDataMap.get('html');
+      const backendData = {
+        screenshot:
+          'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', // 1x1 transparent PNG
+        blockId: id,
+        blockLabel: label,
+        tabUrl: worker.activeTab?.url || 'unknown',
+        tabTitle: worker.activeTab?.title || 'unknown',
+        timestamp: Date.now(),
+        workflowId: worker.engine?.id || 'unknown',
+        description: data.description || '',
+        screenshotType: 'html',
+        elementHTML: htmlData.elementHTML,
+        pageHTML: htmlData.pageHTML,
+        htmlContent: htmlData.htmlContent,
+        prevStep,
+      };
+
+      await sendScreenshotToBackend(backendData);
     }
 
     // Return the first screenshot as main data (for backward compatibility)

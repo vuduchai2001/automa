@@ -128,7 +128,18 @@ async function captureElement({ selector, tabId, options, $frameRect }) {
     newHeight
   );
 
-  return canvasToBase64(canvas, options);
+  // Capture HTML of the element
+  const elementHTML = element.outerHTML;
+
+  // Capture full page HTML
+  const pageHTML = document.documentElement.outerHTML;
+
+  // Return both screenshot and HTML
+  return {
+    image: canvasToBase64(canvas, options),
+    elementHTML,
+    pageHTML,
+  };
 }
 
 export default async function ({
@@ -137,14 +148,20 @@ export default async function ({
   data: { type, selector, $frameRect },
 }) {
   if (type === 'element') {
-    const imageUrl = await captureElement({
+    const result = await captureElement({
       tabId,
       options,
       selector,
       $frameRect,
     });
 
-    return imageUrl;
+    return result;
+  }
+
+  if (type === 'get-page-html') {
+    return {
+      pageHTML: document.documentElement.outerHTML,
+    };
   }
 
   document.body.classList.add('is-screenshotting');
