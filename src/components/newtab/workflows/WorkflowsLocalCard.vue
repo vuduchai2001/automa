@@ -36,7 +36,7 @@
             </button>
           </template>
           <ui-list class="space-y-1" style="min-width: 165px">
-            <ui-list-item
+            <!-- <ui-list-item
               class="cursor-pointer"
               @click="$emit('toggleDisable')"
             >
@@ -44,7 +44,7 @@
               <span class="capitalize">
                 {{ t(`common.${workflow.isDisabled ? 'enable' : 'disable'}`) }}
               </span>
-            </ui-list-item>
+            </ui-list-item> -->
             <ui-list-item class="cursor-pointer" @click="$emit('togglePin')">
               <v-remixicon name="riPushpin2Line" class="mr-2 -ml-1" />
               <span>{{
@@ -52,7 +52,7 @@
               }}</span>
             </ui-list-item>
             <ui-list-item
-              v-for="item in menu"
+              v-for="item in visibleMenu"
               :key="item.id"
               v-close-popover
               class="cursor-pointer"
@@ -66,6 +66,19 @@
       </div>
     </template>
     <template #footer-content>
+      <span
+        v-if="workflow.status && statusConfig[workflow.status]"
+        class="mr-2 rounded px-1.5 py-0.5 text-xs"
+        :class="statusConfig[workflow.status].class"
+      >
+        {{ statusConfig[workflow.status].label }}
+      </span>
+      <span
+        v-if="workflow.version"
+        class="mr-2 rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-300"
+      >
+        v{{ workflow.version }}
+      </span>
       <v-remixicon
         v-if="isShared"
         v-tooltip:bottom.group="
@@ -88,10 +101,11 @@
   </shared-card>
 </template>
 <script setup>
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import SharedCard from '@/components/newtab/shared/SharedCard.vue';
 
-defineProps({
+const props = defineProps({
   workflow: {
     type: Object,
     default: () => ({}),
@@ -113,4 +127,26 @@ defineProps({
 defineEmits(['toggleDisable', 'togglePin', 'execute']);
 
 const { t } = useI18n();
+
+const visibleMenu = computed(() =>
+  props.menu.filter((item) =>
+    item.hidden ? !item.hidden(props.workflow) : true
+  )
+);
+
+const statusConfig = {
+  draft: {
+    label: 'Draft',
+    class:
+      'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
+  },
+  approved: {
+    label: 'Approved',
+    class: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+  },
+  deprecated: {
+    label: 'Deprecated',
+    class: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
+  },
+};
 </script>

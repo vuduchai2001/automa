@@ -1,4 +1,4 @@
-import { fetchGapi, validateOauthToken } from '@/utils/api';
+import { fetchGapi, validateOauthToken } from '@/utils/nativeApi';
 import getFile from '@/utils/getFile';
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
 import renderString from '../templating/renderString';

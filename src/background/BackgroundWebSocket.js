@@ -1,6 +1,7 @@
 import browser from 'webextension-polyfill';
 import { nanoid } from 'nanoid';
 import dbLogs from '@/db/logs';
+import { getAccessToken } from '@/utils/auth';
 import BackgroundWorkflowUtils from './BackgroundWorkflowUtils';
 import { getWebSocketConfig } from './WebSocketConfig';
 
@@ -24,8 +25,8 @@ class BackgroundWebSocket {
     this.ws = null;
     this.isConnected = false;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
-    this.reconnectDelay = 5000; // 5 seconds
+    this.maxReconnectAttempts = 3;
+    this.reconnectDelay = 10000; // 10 seconds
     this.reconnectTimer = null;
 
     // Track active executions
@@ -50,6 +51,13 @@ class BackgroundWebSocket {
     this._initializing = true;
 
     try {
+      // Check if user is authenticated before connecting
+      const { session } = await browser.storage.local.get('session');
+      if (!session?.access_token) {
+        console.info('[WebSocket] Not authenticated, skipping connection');
+        return;
+      }
+
       // Get or create installation ID
       const { installationId } = await browser.storage.local.get(
         'installationId'
@@ -63,32 +71,30 @@ class BackgroundWebSocket {
         this.installationId = installationId;
       }
 
+      // Read profileId (bridged from page localStorage)
+      const { profileId } = await browser.storage.local.get('profileId');
+      this.profileId = profileId || null;
+
       // Get WebSocket config from storage
       const { wsConfig } = await browser.storage.local.get('wsConfig');
 
-      // Auto-enable WebSocket if not configured
+      // Setup default config if not configured
       if (!wsConfig) {
         await this.setupConfig();
-        // Get config again after setup
         const { wsConfig: newConfig } = await browser.storage.local.get(
           'wsConfig'
         );
         if (newConfig && newConfig.enabled && newConfig.url) {
-          this.connect(newConfig.url, newConfig.authToken);
+          this.connect(newConfig.url);
         }
         return;
       }
 
-      if (!wsConfig.enabled) {
+      if (!wsConfig.enabled || !wsConfig.url) {
         return;
       }
 
-      const { url, authToken } = wsConfig;
-      if (!url) {
-        return;
-      }
-
-      this.connect(url, authToken);
+      this.connect(wsConfig.url);
     } catch (error) {
       console.error('[WebSocket] Failed to initialize:', error);
     } finally {
@@ -106,11 +112,10 @@ class BackgroundWebSocket {
   }
 
   /**
-   * Get or setup default config
+   * Save default config to storage (no recursive init call)
    * @returns {Promise<void>}
    */
   async setupConfig() {
-    await this.init();
     const defaultConfig = getWebSocketConfig();
     await browser.storage.local.set({ wsConfig: defaultConfig });
   }
@@ -118,19 +123,31 @@ class BackgroundWebSocket {
   /**
    * Connect to WebSocket server
    */
-  connect(url, authToken) {
+  async connect(url) {
     try {
-      // Add auth token to URL if provided
-      const wsUrl = authToken
-        ? `${url}?token=${encodeURIComponent(authToken)}`
+      // Get fresh JWT token for authentication
+      const token = await getAccessToken();
+      const wsUrl = token
+        ? `${url}?profile_id=${encodeURIComponent(
+            this.profileId || '06990fa2-5ca2-7200-8000-b146c9821447'
+          )}`
         : url;
 
       this.ws = new WebSocket(wsUrl);
 
-      this.ws.onopen = () => this.onOpen();
-      this.ws.onmessage = (event) => this.onMessage(event);
+      this.ws.onopen = () => {
+        console.log('socket conenction');
+        this.onOpen().catch((e) =>
+          console.error('[WebSocket] onOpen error:', e)
+        );
+      };
+      this.ws.onmessage = (event) => {
+        this.onMessage(event).catch((e) =>
+          console.error('[WebSocket] onMessage error:', e)
+        );
+      };
       this.ws.onerror = (error) => this.onError(error);
-      this.ws.onclose = (event) => this.onClose(event);
+      this.ws.onclose = () => this.onClose();
     } catch (error) {
       console.error('[WebSocket] Connection error:', error);
       this.scheduleReconnect();
@@ -141,25 +158,39 @@ class BackgroundWebSocket {
    * Handle connection opened
    */
   async onOpen() {
-    this.isConnected = true;
-    this.reconnectAttempts = 0;
+    try {
+      this.isConnected = true;
+      this.reconnectAttempts = 0;
 
-    // Update badge to show connected status
-    await browser.action.setBadgeBackgroundColor({ color: '#10B981' }); // Green
-    await browser.action.setBadgeText({ text: '●' });
+      // Get fresh token for identify message
+      const token = await getAccessToken();
 
-    // Send identification message
-    this.send({
-      type: 'identify',
-      data: {
-        extensionId: browser.runtime.id,
-        installationId: this.installationId,
-        version: browser.runtime.getManifest().version,
-      },
-    });
+      // Send identification message with auth token and profileId
+      this.send({
+        type: 'identify',
+        data: {
+          extensionId: browser.runtime.id,
+          installationId: this.installationId,
+          profileId: this.profileId,
+          version: browser.runtime.getManifest().version,
+          token,
+        },
+      });
 
-    // Send queued messages
-    this.flushMessageQueue();
+      // Send queued messages
+      this.flushMessageQueue();
+
+      // Update badge (non-blocking, don't let badge errors affect connection)
+      const browserAction = browser.action || browser.browserAction;
+      if (browserAction) {
+        browserAction
+          .setBadgeBackgroundColor({ color: '#10B981' })
+          .catch(() => {});
+        browserAction.setBadgeText({ text: '●' }).catch(() => {});
+      }
+    } catch (error) {
+      console.error('[WebSocket] Error in onOpen:', error);
+    }
   }
 
   /**
@@ -169,11 +200,11 @@ class BackgroundWebSocket {
     try {
       const message = JSON.parse(event.data);
 
-      switch (message.type) {
+      switch (message?.command) {
         case 'welcome':
           break;
 
-        case 'execute_workflow':
+        case 'executeAction':
           await this.handleExecuteWorkflow(message);
           break;
 
@@ -208,7 +239,9 @@ class BackgroundWebSocket {
    * Handle execute workflow request
    */
   async handleExecuteWorkflow(message) {
-    const { executionId, workflow, inputs, options } = message.data;
+    const { request_id: executionId, params } = message;
+
+    const { workflow_config: workflow, options, params: inputs } = params || {};
 
     if (!executionId) {
       this.send({
@@ -277,7 +310,7 @@ class BackgroundWebSocket {
       );
 
       // Monitor workflow completion
-      this.monitorWorkflowExecution(executionId, workflowData.id);
+      // this.monitorWorkflowExecution(executionId, workflowData.id);
     } catch (error) {
       console.error('[WebSocket] ❌ Error executing workflow:', error);
 
@@ -608,18 +641,28 @@ class BackgroundWebSocket {
    */
   onError(error) {
     console.error('[WebSocket] ❌ Error:', error);
-    this.onClose();
+    // Don't call onClose here — the WebSocket 'close' event will fire
+    // automatically after 'error', so onClose will be called by the event.
   }
 
   /**
    * Handle connection closed
    */
-  async onClose() {
+  onClose() {
     this.isConnected = false;
 
-    // Update badge to show disconnected status
-    await browser.action.setBadgeBackgroundColor({ color: '#EF4444' }); // Red
-    await browser.action.setBadgeText({ text: '○' });
+    // Update badge (non-blocking)
+    try {
+      const browserAction = browser.action || browser.browserAction;
+      if (browserAction) {
+        browserAction
+          .setBadgeBackgroundColor({ color: '#EF4444' })
+          .catch(() => {});
+        browserAction.setBadgeText({ text: '○' }).catch(() => {});
+      }
+    } catch (e) {
+      // ignore badge errors
+    }
 
     // Schedule reconnection
     this.scheduleReconnect();
@@ -643,7 +686,7 @@ class BackgroundWebSocket {
 
       const { wsConfig } = await browser.storage.local.get('wsConfig');
       if (wsConfig && wsConfig.enabled) {
-        this.connect(wsConfig.url, wsConfig.authToken);
+        this.connect(wsConfig.url);
       }
     }, delay);
   }

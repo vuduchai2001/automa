@@ -328,7 +328,7 @@ import { usePackageStore } from '@/stores/package';
 import { useTeamWorkflowStore } from '@/stores/teamWorkflow';
 import { useUserStore } from '@/stores/user';
 import { useWorkflowStore } from '@/stores/workflow';
-import { fetchApi } from '@/utils/api';
+import { fetchWorkflowById } from '@/utils/workflowApi';
 import convertWorkflowData from '@/utils/convertWorkflowData';
 import DroppedNode from '@/utils/editor/DroppedNode';
 import extractAutocopmleteData from '@/utils/editor/editorAutocomplete';
@@ -623,67 +623,7 @@ const updateBlockData = debounce((data) => {
   state.dataChanged = true;
 }, 250);
 const updateHostedWorkflow = throttle(async () => {
-  if (isTeamWorkflow) return;
-  if (!userStore.user || workflowPayload.isUpdating) return;
-
-  const isHosted = userStore.hostedWorkflows[route.params.id];
-  const isBackup = userStore.backupIds?.includes(route.params.id);
-  const workflowExist = workflowStore.getById(route.params.id);
-
-  if (
-    (!isBackup && !isHosted) ||
-    !workflowExist ||
-    Object.keys(workflowPayload.data).length === 0
-  )
-    return;
-
-  workflowPayload.isUpdating = true;
-
-  const delKeys = [
-    'id',
-    'pass',
-    'logs',
-    'trigger',
-    'createdAt',
-    'isDisabled',
-    'isProtected',
-  ];
-  delKeys.forEach((key) => {
-    delete workflowPayload.data[key];
-  });
-
-  try {
-    if (typeof workflowPayload.data.drawflow === 'string') {
-      workflowPayload.data.drawflow = parseJSON(
-        workflowPayload.data.drawflow,
-        workflowPayload.data.drawflow
-      );
-    }
-
-    const response = await fetchApi(`/me/workflows/${route.params.id}`, {
-      auth: true,
-      method: 'PUT',
-      keepalive: true,
-      body: JSON.stringify({
-        workflow: workflowPayload.data,
-      }),
-    });
-
-    if (!response.ok) throw new Error(response.message);
-    if (isBackup) {
-      const result = await response.json();
-
-      if (result.updatedAt) {
-        await browser.storage.local.set({ lastBackup: result.updatedAt });
-      }
-    }
-
-    workflowPayload.data = {};
-    workflowPayload.isUpdating = false;
-  } catch (error) {
-    console.error(error);
-    workflowPayload.isUpdating = false;
-  }
+  return; // Hosted/backup features disabled
 }, 5000);
 const onEdgesChange = debounce((changes) => {
   changes.forEach(({ type, item }) => {
@@ -1548,24 +1488,7 @@ function checkWorkflowPermission() {
   });
 }
 function checkWorkflowUpdate() {
-  const updatedAt = encodeURIComponent(workflow.value.updatedAt);
-  fetchApi(
-    `/teams/${teamId}/workflows/${workflowId}/check-update?updatedAt=${updatedAt}`,
-    { auth: true }
-  )
-    .then((response) => response.json())
-    .then((result) => {
-      if (!result) return;
-
-      updateWorkflow(result).then(() => {
-        editor.value.setNodes(result.drawflow.nodes || []);
-        editor.value.setEdges(result.drawflow.edges || []);
-        editor.value.fitView();
-      });
-    })
-    .catch((error) => {
-      console.error(error);
-    });
+  return; // Team workflow feature disabled
 }
 /* eslint-disable consistent-return */
 function onBeforeLeave() {
@@ -1627,7 +1550,7 @@ onDeactivated(() => {
   });
 });
 onBeforeRouteLeave(onBeforeLeave);
-onMounted(() => {
+onMounted(async () => {
   if (!workflow.value) {
     router.replace(isPackage ? '/packages' : '/');
     return null;
@@ -1638,11 +1561,47 @@ onMounted(() => {
   state.showSidebar = sidebarState;
   state.sidebarState = sidebarState;
 
+  // Fetch fresh workflow details from API (GET)
+  if (!isPackage && !isTeamWorkflow) {
+    try {
+      const details = await fetchWorkflowById(route.params.id);
+      if (details) {
+        const config = details.workflow_config || {};
+        const mapped = {
+          name: details.name,
+          code: details.code,
+          platform_code: details.platform_code,
+          description: details.description || '',
+          drawflow: config.drawflow || workflow.value.drawflow,
+          settings: config.settings || workflow.value.settings,
+          globalData: config.globalData || workflow.value.globalData,
+          table: config.table || workflow.value.table,
+          dataColumns: config.dataColumns || workflow.value.dataColumns,
+          icon: config.icon || workflow.value.icon,
+          trigger: config.trigger || workflow.value.trigger,
+          isDisabled: config.isDisabled ?? workflow.value.isDisabled,
+          version: details.version || workflow.value.version,
+          status: details.status || workflow.value.status,
+          updatedAt: details.updated_at
+            ? new Date(details.updated_at).getTime()
+            : workflow.value.updatedAt,
+        };
+        // Update local state only (no API call)
+        Object.assign(workflowStore.workflows[route.params.id], mapped);
+        await workflowStore.saveToStorage('workflows');
+      }
+    } catch (e) {
+      console.error('[WorkflowDetails] Failed to fetch details:', e);
+    }
+  }
+
   if (!isPackage) {
     const convertedData = convertWorkflowData(workflow.value);
-    updateWorkflow({ drawflow: convertedData.drawflow }).then(() => {
-      state.workflowConverted = true;
+    // Update local state only, don't push to API
+    Object.assign(workflowStore.workflows[route.params.id], {
+      drawflow: convertedData.drawflow,
     });
+    state.workflowConverted = true;
   } else {
     state.workflowConverted = true;
   }

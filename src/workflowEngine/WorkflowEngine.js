@@ -1,6 +1,6 @@
 import dbStorage from '@/db/storage';
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
-import { fetchApi } from '@/utils/api';
+import backendApi from '@/utils/backendApi';
 import { getBlocks } from '@/utils/getSharedData';
 import { clearCache, isObject, parseJSON, sleep } from '@/utils/helper';
 import cloneDeep from 'lodash.clonedeep';
@@ -478,31 +478,22 @@ class WorkflowEngine {
           'user'
         )) || { user: null };
 
-        const logDto = {
+        // Send workflow execution log to backend
+        const logData = {
           workflowId: this.workflow.id,
-          workflowName: this.workflow.name,
-          nodesCount: this.workflow.drawflow.nodes.length,
           status,
-          message: message || '',
-          startedAt: new Date(this.startedTimestamp).toISOString(),
-          endedAt: new Date(endedTimestamp).toISOString(),
-          userId: user?.id,
+          timestamp: endedTimestamp,
+          workflowRefData: {
+            workflowName: this.workflow.name,
+            nodesCount: this.workflow.drawflow?.nodes?.length || 0,
+            message: message || '',
+            startedAt: new Date(this.startedTimestamp).toISOString(),
+            endedAt: new Date(endedTimestamp).toISOString(),
+          },
         };
-
-        try {
-          const response = await fetchApi('/workflows/logs/report', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(logDto),
-            auth: true,
-          });
-
-          if (!response.ok) {
-            throw new Error(`API request failed: ${response.status}`);
-          }
-        } catch (err) {
-          console.error('Failed to report workflow execution:', err);
-        }
+        backendApi.sendWorkflowLog(logData).catch((err) => {
+          console.error('[WorkflowEngine] Failed to report log:', err);
+        });
       }
 
       this.dispatchEvent('destroyed', {

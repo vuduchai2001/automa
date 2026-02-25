@@ -58,36 +58,39 @@
     </button>
     <div class="grow"></div>
     <ui-popover
-      v-if="userStore.user"
+      v-if="userStore?.user?.data"
       trigger="mouseenter click"
       placement="right"
     >
       <template #trigger>
         <span class="bg-box-transparent inline-block rounded-full p-1">
-          <img
-            :src="userStore.user.avatar_url"
-            height="32"
-            width="32"
-            class="rounded-full"
-          />
+          <v-remixicon name="riGroupLine" />
         </span>
       </template>
       <div class="w-44">
         <div class="flex items-center">
           <p class="text-overflow flex-1">
-            {{ userStore.user.username }}
+            {{ userStore?.user?.data.email }}
           </p>
           <span
             title="Subscription"
-            :class="subColors[userStore.user.subscription]"
+            :class="subColors[userStore?.user.data?.subscription]"
             class="rounded-md px-2 py-1 text-sm capitalize"
           >
-            {{ userStore.user.subscription }}
+            {{ userStore?.user?.data.subscription }}
           </span>
         </div>
+        <hr class="my-2" />
+        <button
+          class="flex w-full items-center rounded-lg px-2 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+          @click="handleLogout"
+        >
+          <v-remixicon name="riLogoutBoxRLine" size="18" class="mr-2" />
+          {{ t('auth.logout') }}
+        </button>
       </div>
     </ui-popover>
-    <ui-popover trigger="mouseenter" placement="right" class="my-4">
+    <!-- <ui-popover trigger="mouseenter" placement="right" class="my-4">
       <template #trigger>
         <v-remixicon name="riGroupLine" />
       </template>
@@ -106,7 +109,7 @@
           {{ item.name }}
         </ui-list-item>
       </ui-list>
-    </ui-popover>
+    </ui-popover> -->
     <router-link v-tooltip:right.group="t('settings.menu.about')" to="/about">
       <v-remixicon class="cursor-pointer" name="riInformationLine" />
     </router-link>
@@ -122,7 +125,6 @@ import { useUserStore } from '@/stores/user';
 import { useWorkflowStore } from '@/stores/workflow';
 import { useShortcut, getShortcut } from '@/composable/shortcut';
 import { useGroupTooltip } from '@/composable/groupTooltip';
-import { communities } from '@/utils/shared';
 import { initElementSelector } from '@/newtab/utils/elementSelector';
 import emitter from '@/lib/mitt';
 
@@ -147,12 +149,12 @@ const tabs = [
     path: '/workflows',
     shortcut: getShortcut('page:workflows', '/workflows'),
   },
-  {
-    id: 'packages',
-    icon: 'mdiPackageVariantClosed',
-    path: '/packages',
-    shortcut: '',
-  },
+  // {
+  //   id: 'packages',
+  //   icon: 'mdiPackageVariantClosed',
+  //   path: '/packages',
+  //   shortcut: '',
+  // },
   {
     id: 'schedule',
     icon: 'riTimeLine',
@@ -202,6 +204,10 @@ useShortcut(
   }
 );
 
+async function handleLogout() {
+  await userStore.logout();
+  router.push('/login');
+}
 function navigateLink(event, navigateFn, tab) {
   event.preventDefault();
 

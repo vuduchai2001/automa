@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia';
-import { nanoid } from 'nanoid';
 import browser from 'webextension-polyfill';
+import { isAuthenticated } from '@/utils/auth';
+import {
+  fetchFolders,
+  createFolder,
+  updateFolder as apiUpdateFolder,
+  deleteFolder as apiDeleteFolder,
+} from '@/utils/folderApi';
 
 export const useFolderStore = defineStore('folder', {
   storageMap: {
@@ -12,19 +18,16 @@ export const useFolderStore = defineStore('folder', {
   }),
   actions: {
     async addFolder(name) {
-      this.items.push({
-        name,
-        id: nanoid(),
-      });
-
+      const created = await createFolder({ name });
+      this.items.push(created);
       await this.saveToStorage('items');
-
-      return this.items.at(-1);
+      return created;
     },
     async deleteFolder(id) {
       const index = this.items.findIndex((folder) => folder.id === id);
       if (index === -1) return null;
 
+      await apiDeleteFolder(id);
       this.items.splice(index, 1);
       await this.saveToStorage('items');
 
@@ -34,17 +37,42 @@ export const useFolderStore = defineStore('folder', {
       const index = this.items.findIndex((folder) => folder.id === id);
       if (index === -1) return null;
 
+      // Optimistic update
       Object.assign(this.items[index], data);
       await this.saveToStorage('items');
 
+      try {
+        await apiUpdateFolder(id, data);
+      } catch (error) {
+        console.error('[FolderStore] API update failed:', error);
+      }
+
       return this.items[index];
     },
-    load() {
-      return browser.storage.local.get('folders').then(({ folders }) => {
+    async load() {
+      try {
+        // 1. Load from local cache first
+        const { folders } = await browser.storage.local.get('folders');
         this.items = folders || [];
         this.retrieved = true;
-        return folders;
-      });
+
+        // 2. Fetch from backend if authenticated
+        const authenticated = await isAuthenticated();
+        if (!authenticated) return this.items;
+
+        const apiFolders = await fetchFolders();
+        this.items = apiFolders;
+        await this.saveToStorage('items');
+
+        return this.items;
+      } catch (error) {
+        console.error(
+          '[FolderStore] Failed to load from API, using cache:',
+          error
+        );
+        this.retrieved = true;
+        return this.items;
+      }
     },
   },
 });

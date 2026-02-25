@@ -1,7 +1,13 @@
 import { defineStore } from 'pinia';
-import { nanoid } from 'nanoid';
 import browser from 'webextension-polyfill';
 import { fetchApi } from '@/utils/api';
+import { isAuthenticated } from '@/utils/auth';
+import {
+  fetchPackages,
+  createPackage,
+  updatePackage as apiUpdatePackage,
+  deletePackage as apiDeletePackage,
+} from '@/utils/packageApi';
 
 const defaultPackage = {
   id: '',
@@ -46,17 +52,27 @@ export const usePackageStore = defineStore('packages', {
         ...data,
         createdAt: Date.now(),
       };
-      if (newId) packageData.id = nanoid();
+      if (newId) delete packageData.id;
 
-      this.packages.push(packageData);
+      const created = await createPackage(packageData);
+      const finalPackage = { ...packageData, ...created };
+
+      this.packages.push(finalPackage);
       await this.saveToStorage('packages');
     },
     async update({ id, data }) {
       const index = this.packages.findIndex((pkg) => pkg.id === id);
       if (index === -1) return null;
 
+      // Optimistic update
       Object.assign(this.packages[index], data);
       await this.saveToStorage('packages');
+
+      try {
+        await apiUpdatePackage(id, data);
+      } catch (error) {
+        console.error('[PackageStore] API update failed:', error);
+      }
 
       return this.packages[index];
     },
@@ -65,8 +81,9 @@ export const usePackageStore = defineStore('packages', {
       if (index === -1) return null;
 
       const data = this.packages[index];
-      this.packages.splice(index, 1);
 
+      await apiDeletePackage(id);
+      this.packages.splice(index, 1);
       await this.saveToStorage('packages');
 
       return data;
@@ -81,12 +98,30 @@ export const usePackageStore = defineStore('packages', {
     async loadData(force = false) {
       if (this.retrieved && !force) return this.packages;
 
-      const { savedBlocks } = await browser.storage.local.get('savedBlocks');
+      try {
+        // 1. Load from local cache first
+        const { savedBlocks } =
+          await browser.storage.local.get('savedBlocks');
+        this.packages = savedBlocks || [];
+        this.retrieved = true;
 
-      this.packages = savedBlocks || [];
-      this.retrieved = true;
+        // 2. Fetch from backend if authenticated
+        const authenticated = await isAuthenticated();
+        if (!authenticated) return this.packages;
 
-      return this.packages;
+        const apiPackages = await fetchPackages();
+        this.packages = apiPackages;
+        await this.saveToStorage('packages');
+
+        return this.packages;
+      } catch (error) {
+        console.error(
+          '[PackageStore] Failed to load from API, using cache:',
+          error
+        );
+        this.retrieved = true;
+        return this.packages;
+      }
     },
     async loadShared() {
       try {

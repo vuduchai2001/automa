@@ -49,7 +49,7 @@ const router = useRouter();
 
 const menus = [
   { id: 'general', path: '/settings', icon: 'riSettings3Line' },
-  { id: 'backup', path: '/backup', icon: 'riDatabase2Line' },
+  // { id: 'backup', path: '/backup', icon: 'riDatabase2Line' }, // disabled: backup feature hidden
   { id: 'editor', path: '/editor', icon: 'riMindMap' },
   { id: 'shortcuts', path: '/shortcuts', icon: 'riKeyboardLine' },
   { id: 'about', path: '/about', icon: 'riInformationLine' },

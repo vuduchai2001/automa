@@ -103,6 +103,50 @@
       </ui-button>
     </div>
   </ui-modal>
+  <ui-modal
+    v-model="versionState.show"
+    :title="`Versions - ${versionState.workflowName}`"
+  >
+    <div v-if="versionState.loading" class="py-8 text-center">
+      <ui-spinner color="text-accent" />
+    </div>
+    <div
+      v-else-if="versionState.versions.length === 0"
+      class="py-8 text-center text-gray-500"
+    >
+      No versions found
+    </div>
+    <ui-list
+      v-else
+      class="space-y-1"
+      style="max-height: 400px; overflow-y: auto"
+    >
+      <ui-list-item
+        v-for="version in versionState.versions"
+        :key="version.id"
+        class="flex items-center justify-between"
+      >
+        <div class="min-w-0 flex-1">
+          <p class="font-semibold">v{{ version.version }}</p>
+          <p
+            v-if="version.changelog"
+            class="truncate text-sm text-gray-600 dark:text-gray-200"
+          >
+            {{ version.changelog }}
+          </p>
+          <p class="text-xs text-gray-400">
+            {{ formatVersionDate(version.created_at) }}
+          </p>
+        </div>
+        <ui-button
+          class="ml-4 shrink-0"
+          @click="handleRollback(version)"
+        >
+          Use this version
+        </ui-button>
+      </ui-list-item>
+    </ui-list>
+  </ui-modal>
 </template>
 <script setup>
 import {
@@ -116,11 +160,19 @@ import { useI18n } from 'vue-i18n';
 import SelectionArea from '@viselect/vanilla';
 import browser from 'webextension-polyfill';
 import cloneDeep from 'lodash.clonedeep';
+import dayjs from '@/lib/dayjs';
 import { arraySorter } from '@/utils/helper';
 import { useUserStore } from '@/stores/user';
 import { useDialog } from '@/composable/dialog';
 import { useWorkflowStore } from '@/stores/workflow';
 import { exportWorkflow } from '@/utils/workflowData';
+import {
+  fetchWorkflowVersions,
+  fetchWorkflowById,
+  rollbackWorkflow,
+  approveWorkflow,
+  deprecateWorkflow,
+} from '@/utils/workflowApi';
 import { useSharedWorkflowStore } from '@/stores/sharedWorkflow';
 import RendererWorkflowService from '@/service/renderer/RendererWorkflowService';
 import WorkflowsLocalCard from './WorkflowsLocalCard.vue';
@@ -163,6 +215,14 @@ const renameState = shallowReactive({
   name: '',
   show: false,
   description: '',
+});
+const versionState = shallowReactive({
+  show: false,
+  workflowId: '',
+  workflowName: '',
+  versions: [],
+  loading: false,
+  rollbackLoading: false,
 });
 const pagination = shallowReactive({
   currentPage: 1,
@@ -366,6 +426,104 @@ function togglePinWorkflow(workflow) {
   });
 }
 
+async function openVersions(workflow) {
+  versionState.workflowId = workflow.id;
+  versionState.workflowName = workflow.name;
+  versionState.show = true;
+  versionState.loading = true;
+  try {
+    versionState.versions = await fetchWorkflowVersions(workflow.id);
+  } catch (e) {
+    console.error('[Versions] Failed to fetch:', e);
+    versionState.versions = [];
+  } finally {
+    versionState.loading = false;
+  }
+}
+async function handleRollback(version) {
+  dialog.confirm({
+    title: 'Rollback version',
+    body: `Rollback "${versionState.workflowName}" to v${version.version}?`,
+    onConfirm: async () => {
+      versionState.rollbackLoading = true;
+      try {
+        await rollbackWorkflow(
+          versionState.workflowId,
+          version.id,
+          `Rollback to v${version.version}`
+        );
+        const details = await fetchWorkflowById(versionState.workflowId);
+        if (details) {
+          const config = details.workflow_config || {};
+          const mapped = {
+            name: details.name,
+            description: details.description || '',
+            version: details.version || '',
+            icon: config.icon || 'riGlobalLine',
+            drawflow: config.drawflow || { edges: [], zoom: 1.3, nodes: [] },
+            settings: config.settings || {},
+            globalData: config.globalData || '{\n\t"key": "value"\n}',
+            table: config.table || [],
+            dataColumns: config.dataColumns || [],
+            trigger: config.trigger || null,
+            isDisabled: config.isDisabled || false,
+            updatedAt: details.updated_at
+              ? new Date(details.updated_at).getTime()
+              : Date.now(),
+          };
+          Object.assign(
+            workflowStore.workflows[versionState.workflowId],
+            mapped
+          );
+          await workflowStore.saveToStorage('workflows');
+        }
+        versionState.show = false;
+      } catch (e) {
+        console.error('[Versions] Rollback failed:', e);
+      } finally {
+        versionState.rollbackLoading = false;
+      }
+    },
+  });
+}
+function formatVersionDate(dateStr) {
+  if (!dateStr) return '';
+  return dayjs(dateStr).fromNow();
+}
+function handleApprove(workflow) {
+  dialog.confirm({
+    title: 'Approve workflow',
+    body: `Approve "${workflow.name}"?`,
+    onConfirm: async () => {
+      try {
+        const result = await approveWorkflow(workflow.id);
+        workflowStore.workflows[workflow.id].status =
+          result.status || 'approved';
+        await workflowStore.saveToStorage('workflows');
+      } catch (e) {
+        console.error('[Approve] Failed:', e);
+      }
+    },
+  });
+}
+function handleDeprecate(workflow) {
+  dialog.confirm({
+    title: 'Deprecate workflow',
+    okVariant: 'danger',
+    body: `Deprecate "${workflow.name}"? This workflow will be marked as deprecated.`,
+    onConfirm: async () => {
+      try {
+        const result = await deprecateWorkflow(workflow.id);
+        workflowStore.workflows[workflow.id].status =
+          result.status || 'deprecated';
+        await workflowStore.saveToStorage('workflows');
+      } catch (e) {
+        console.error('[Deprecate] Failed:', e);
+      }
+    },
+  });
+}
+
 const menu = [
   {
     id: 'copy-id',
@@ -400,6 +558,27 @@ const menu = [
     name: t('common.rename'),
     icon: 'riPencilLine',
     action: initRenameWorkflow,
+  },
+  {
+    id: 'approve',
+    name: 'Approve',
+    icon: 'riCheckLine',
+    action: handleApprove,
+    hidden: (workflow) => workflow.status !== 'draft',
+  },
+  {
+    id: 'deprecate',
+    name: 'Deprecate',
+    icon: 'riIndeterminateCircleLine',
+    action: handleDeprecate,
+    hidden: (workflow) =>
+      workflow.status === 'deprecated' || workflow.status === 'draft',
+  },
+  {
+    id: 'versions',
+    name: 'Versions',
+    icon: 'riHistoryLine',
+    action: openVersions,
   },
   {
     id: 'delete',

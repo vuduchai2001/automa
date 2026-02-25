@@ -98,7 +98,11 @@
     "signIn": "Sign in",
     "username": "You need to set your username first",
     "clickHere": "Click here",
-    "text": "You need to be signed in before you can do that"
+    "text": "You need to be signed in before you can do that",
+    "password": "Password",
+    "logout": "Sign out",
+    "loginFailed": "Login failed. Please check your credentials.",
+    "rememberMe": "Remember me"
   },
   "running": {
     "start": "Started on {date}",

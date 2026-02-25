@@ -21,9 +21,39 @@ import BackgroundWebSocket from './BackgroundWebSocket';
 BackgroundOffscreen.instance.sendMessage('halo');
 
 // ═══════════════════════════════════════════════════
-// INITIALIZE WEBSOCKET SERVICE
+// WEBSOCKET SERVICE (connects only after login)
 // ═══════════════════════════════════════════════════
+// Try to connect if already authenticated
 BackgroundWebSocket.instance.init();
+
+// Connect/disconnect only on actual login/logout transitions
+// (ignore token refreshes which also update session)
+browser.storage.local.onChanged.addListener((changes) => {
+  if (!changes.session) return;
+
+  const hadToken = !!changes.session.oldValue?.access_token;
+  const hasToken = !!changes.session.newValue?.access_token;
+
+  if (!hadToken && hasToken) {
+    // Login transition: no token → has token
+    BackgroundWebSocket.instance.reconnectAttempts = 0;
+    BackgroundWebSocket.instance.init();
+  } else if (hadToken && !hasToken) {
+    // Logout transition: had token → no token
+    BackgroundWebSocket.instance.disconnect();
+  }
+  // Token refresh (hadToken && hasToken) → ignore, don't reconnect
+
+  // profileId bridged from page localStorage → update WS and re-identify
+  if (changes.profileId && changes.profileId.newValue) {
+    BackgroundWebSocket.instance.profileId = changes.profileId.newValue;
+    if (BackgroundWebSocket.instance.isConnected) {
+      BackgroundWebSocket.instance.onOpen().catch((e) =>
+        console.error('[WebSocket] Re-identify error:', e)
+      );
+    }
+  }
+});
 
 // ═══════════════════════════════════════════════════
 // CLEANUP OFFScreen DOCUMENT ON STARTUP
@@ -56,28 +86,8 @@ browser.runtime.onInstalled.addListener(
   BackgroundEventsListeners.onRuntimeInstalled
 );
 
-// ═══════════════════════════════════════════════════
-// WEBSOCKET AUTO-RECONNECT ON STARTUP
-// ═══════════════════════════════════════════════════
-browser.runtime.onStartup.addListener(() => {
-  console.log('[Background] Browser startup - reinitializing WebSocket');
-  // Only reconnect if not already connected
-  if (!BackgroundWebSocket.instance.isConnected) {
-    BackgroundWebSocket.instance.init();
-  }
-});
-
-browser.runtime.onInstalled.addListener((details) => {
-  if (details.reason === 'install' || details.reason === 'update') {
-    console.log(
-      '[Background] Extension installed/updated - initializing WebSocket'
-    );
-    // Only reconnect if not already connected
-    if (!BackgroundWebSocket.instance.isConnected) {
-      BackgroundWebSocket.instance.init();
-    }
-  }
-});
+// WebSocket reconnect on startup is handled by the storage listener above
+// and the initial init() call which checks auth before connecting.
 
 browser.webNavigation.onCompleted.addListener(
   BackgroundEventsListeners.onWebNavigationCompleted
@@ -255,12 +265,11 @@ message.on('workflow:breakpoint', (id) => {
 // ═══════════════════════════════════════════════════
 // WEBSOCKET MESSAGE HANDLERS
 // ═══════════════════════════════════════════════════
-message.on('websocket:enable', async ({ url, authToken }) => {
+message.on('websocket:enable', async ({ url }) => {
   await browser.storage.local.set({
     wsConfig: {
       enabled: true,
       url,
-      authToken,
     },
   });
 

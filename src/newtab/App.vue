@@ -8,15 +8,14 @@
     <ui-dialog>
       <template #auth>
         <div class="text-center">
-          <p class="text-xl font-semibold">Oops!! 😬</p>
+          <p class="text-xl font-semibold">{{ t('auth.title') }}</p>
           <p class="mt-2 text-gray-600 dark:text-gray-200">
             {{ t('auth.text') }}
           </p>
           <ui-button
-            tag="a"
-            href="https://extension.automa.site/auth"
-            class="mt-6 block w-full"
             variant="accent"
+            class="mt-6 block w-full"
+            @click="$router.push('/login')"
           >
             {{ t('auth.signIn') }}
           </ui-button>
@@ -89,7 +88,7 @@ import { useSharedWorkflowStore } from '@/stores/sharedWorkflow';
 import { useTeamWorkflowStore } from '@/stores/teamWorkflow';
 import { useUserStore } from '@/stores/user';
 import { useWorkflowStore } from '@/stores/workflow';
-import { getUserWorkflows } from '@/utils/api';
+import { getUserWorkflows } from '@/utils/nativeApi';
 import dataMigration from '@/utils/dataMigration';
 import { MessageListener } from '@/utils/message';
 import { getWorkflowPermissions } from '@/utils/workflowData';
@@ -213,9 +212,9 @@ function stopRecording() {
 }
 
 const messageEvents = {
-  'refresh-packages': function () {
-    packageStore.loadData(true);
-  },
+  // 'refresh-packages': function () {  // disabled: packages feature hidden
+  //   packageStore.loadData(true);
+  // },
   'open-logs': function (data) {
     emitter.emit('ui:logs', {
       show: true,
@@ -321,6 +320,13 @@ watch(
   }
 );
 
+// Bridge profileId from localStorage to browser.storage.local
+// (worker injects profileId into page localStorage before loading extension)
+const profileId = localStorage.getItem('profileId');
+if (profileId) {
+  browser.storage.local.set({ profileId });
+}
+
 (async () => {
   try {
     const { workflowStates } = await browser.storage.local.get(
@@ -356,7 +362,7 @@ watch(
       workflowStore.loadData(),
       teamWorkflowStore.loadData(),
       hostedWorkflowStore.loadData(),
-      packageStore.loadData(),
+      // packageStore.loadData(), // disabled: packages feature hidden
     ]);
 
     await loadLocaleMessages(store.settings.locale, 'newtab');
@@ -370,8 +376,8 @@ watch(
     retrieved.value = true;
 
     await Promise.allSettled([
-      sharedWorkflowStore.fetchWorkflows(),
-      fetchUserData(),
+      // sharedWorkflowStore.fetchWorkflows(), // disabled: shared feature hidden
+      // fetchUserData(), // disabled: backup to cloud feature hidden
       syncHostedWorkflows(),
     ]);
 

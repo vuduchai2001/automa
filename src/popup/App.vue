@@ -12,6 +12,7 @@ import { sendMessage } from '@/utils/message';
 import { useWorkflowStore } from '@/stores/workflow';
 import { useHostedWorkflowStore } from '@/stores/hostedWorkflow';
 import { loadLocaleMessages, setI18nLanguage } from '@/lib/vueI18n';
+import { isAuthenticated } from '@/utils/auth';
 
 const store = useStore();
 const workflowStore = useWorkflowStore();
@@ -29,6 +30,14 @@ browser.storage.local.get('isRecording').then(({ isRecording }) => {
 
 onMounted(async () => {
   try {
+    // Check auth first — redirect to dashboard login if not authenticated
+    const authed = await isAuthenticated();
+    if (!authed) {
+      sendMessage('open:dashboard', '/login', 'background');
+      window.close();
+      return;
+    }
+
     await store.loadSettings();
     await loadLocaleMessages(store.settings.locale, 'popup');
     await setI18nLanguage(store.settings.locale);

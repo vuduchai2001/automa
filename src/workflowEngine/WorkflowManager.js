@@ -1,6 +1,5 @@
 import dayjs from '@/lib/dayjs';
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
-import { fetchApi } from '@/utils/api';
 import backendApi from '@/utils/backendApi';
 import convertWorkflowData from '@/utils/convertWorkflowData';
 import getBlockMessage from '@/utils/getBlockMessage';
@@ -116,15 +115,15 @@ class WorkflowManager {
       }
 
       // Send workflow data to backend
-      backendApi.sendWorkflowLog({
-        workflowRefData,
-        variables: { ...engine.referenceData.variables },
-        globalData: { ...engine.referenceData.globalData },
-        tableData: { ...engine.referenceData.table },
-        workflowId: id,
-        status,
-        timestamp: Date.now(),
-      });
+      // backendApi.sendWorkflowLog({
+      //   workflowRefData,
+      //   variables: { ...engine.referenceData.variables },
+      //   globalData: { ...engine.referenceData.globalData },
+      //   tableData: { ...engine.referenceData.table },
+      //   workflowId: id,
+      //   status,
+      //   timestamp: Date.now(),
+      // });
     });
 
     BrowserAPIService.storage.local
@@ -135,15 +134,17 @@ class WorkflowManager {
           ? dayjs().isSame(checkStatus, 'day')
           : false;
         if (!isSameDay || !checkStatus) {
-          fetchApi('/status')
-            .then((response) => response.json())
-            .then(() => {
-              BrowserAPIService.storage.local.set({
-                checkStatus: new Date().toString(),
-              });
+          backendApi
+            .testConnection()
+            .then((result) => {
+              if (result.success) {
+                BrowserAPIService.storage.local.set({
+                  checkStatus: new Date().toString(),
+                });
+              }
             })
             .catch((error) => {
-              console.error('Failed to check status:', error);
+              console.error('[WorkflowManager] Status check failed:', error);
             });
         }
       })

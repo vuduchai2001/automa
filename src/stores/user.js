@@ -1,4 +1,5 @@
 import { cacheApi, fetchApi } from '@/utils/api';
+import { logout as authLogout, isAuthenticated } from '@/utils/auth';
 import { defineStore } from 'pinia';
 import browser from 'webextension-polyfill';
 
@@ -24,13 +25,26 @@ export const useUserStore = defineStore('user', {
       },
   },
   actions: {
+    async logout() {
+      await authLogout();
+      this.user = null;
+      this.backupIds = [];
+      this.hostedWorkflows = {};
+      this.sharedPackages = [];
+      this.retrieved = false;
+    },
     async loadUser(options = false) {
       try {
         const user = await cacheApi(
           'user-profile',
           async () => {
             try {
-              const response = await fetchApi('/me', { auth: true });
+              const authed = await isAuthenticated();
+              if (!authed) return null;
+
+              const response = await fetchApi('/api/v1/iam/users/me', {
+                auth: true,
+              });
               const result = await response.json();
 
               if (!response.ok) throw new Error(response.message);

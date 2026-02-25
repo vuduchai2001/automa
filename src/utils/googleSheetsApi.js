@@ -1,4 +1,5 @@
-import { fetchGapi, fetchApi } from './api';
+import { fetchApi } from './api';
+import { fetchGapi } from './nativeApi';
 
 function queryBuilder(obj) {
   let str = '';

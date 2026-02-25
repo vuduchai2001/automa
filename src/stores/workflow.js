@@ -1,6 +1,12 @@
-import { fetchApi } from '@/utils/api';
+import { isAuthenticated } from '@/utils/auth';
 import firstWorkflows from '@/utils/firstWorkflows';
 import { tasks } from '@/utils/shared';
+import {
+  fetchWorkflows as apiFetchWorkflows,
+  createWorkflow as apiCreateWorkflow,
+  updateWorkflow as apiUpdateWorkflow,
+  deleteWorkflow as apiDeleteWorkflow,
+} from '@/utils/workflowApi';
 import {
   cleanWorkflowTriggers,
   registerWorkflowTrigger,
@@ -11,7 +17,7 @@ import deepmerge from 'lodash.merge';
 import { nanoid } from 'nanoid';
 import { defineStore } from 'pinia';
 import browser from 'webextension-polyfill';
-import { useUserStore } from './user';
+// import { useUserStore } from './user'; // Hosted/backup features disabled
 
 const defaultWorkflow = (data = null, options = {}) => {
   let workflowData = {
@@ -113,27 +119,85 @@ export const useWorkflowStore = defineStore('workflow', {
   },
   actions: {
     async loadData() {
-      const { workflows, isFirstTime } = await browser.storage.local.get([
-        'workflows',
-        'isFirstTime',
-      ]);
+      try {
+        // 1. Load from local cache first for immediate display
+        const { workflows: cachedWorkflows, isFirstTime } =
+          await browser.storage.local.get(['workflows', 'isFirstTime']);
 
-      let localWorkflows = workflows || {};
+        let localWorkflows = cachedWorkflows || {};
 
-      if (isFirstTime) {
-        localWorkflows = firstWorkflows.map((workflow) =>
-          defaultWorkflow(workflow)
-        );
-        await browser.storage.local.set({
-          isFirstTime: false,
-          workflows: localWorkflows,
+        if (isFirstTime) {
+          localWorkflows = firstWorkflows.map((workflow) =>
+            defaultWorkflow(workflow)
+          );
+          await browser.storage.local.set({
+            isFirstTime: false,
+            workflows: localWorkflows,
+          });
+        }
+
+        this.isFirstTime = isFirstTime;
+        this.workflows = convertWorkflowsToObject(localWorkflows);
+        this.retrieved = true;
+
+        // 2. Fetch from backend API if authenticated
+        const authenticated = await isAuthenticated();
+        if (!authenticated) return;
+
+        const apiWorkflows = await apiFetchWorkflows();
+        const workflowsObj = {};
+
+        apiWorkflows.forEach((apiWf) => {
+          // Map API response (ActionWorkflowResponse/ListItem) to client format
+          const config = apiWf.workflow_config || {};
+          const workflow = {
+            id: apiWf.id,
+            name: apiWf.name,
+            code: apiWf.code,
+            platform_code: apiWf.platform_code,
+            description: apiWf.description || '',
+            icon: config.icon || 'riGlobalLine',
+            folderId: config.folderId || null,
+            drawflow: config.drawflow || { edges: [], zoom: 1.3, nodes: [] },
+            settings: config.settings || {},
+            globalData: config.globalData || '{\n\t"key": "value"\n}',
+            table: config.table || [],
+            dataColumns: config.dataColumns || [],
+            trigger: config.trigger || null,
+            isDisabled: config.isDisabled || false,
+            content: config.content || null,
+            connectedTable: config.connectedTable || null,
+            version: apiWf.version || '',
+            status: apiWf.status || 'draft',
+            createdAt: apiWf.created_at
+              ? new Date(apiWf.created_at).getTime()
+              : Date.now(),
+            updatedAt: apiWf.updated_at
+              ? new Date(apiWf.updated_at).getTime()
+              : Date.now(),
+          };
+
+          if (typeof workflow.drawflow === 'string') {
+            try {
+              workflow.drawflow = JSON.parse(workflow.drawflow);
+            } catch {
+              // keep as-is if parse fails
+            }
+          }
+          workflowsObj[workflow.id] = workflow;
         });
+
+        this.workflows = workflowsObj;
+
+        // Update local cache
+        await browser.storage.local.set({ workflows: workflowsObj });
+      } catch (error) {
+        console.error(
+          '[WorkflowStore] Failed to load from API, using cache:',
+          error
+        );
+        this.retrieved = true;
       }
-
-      this.isFirstTime = isFirstTime;
-      this.workflows = convertWorkflowsToObject(localWorkflows);
-
-      this.retrieved = true;
     },
     updateStates(newStates) {
       this.states = newStates;
@@ -141,26 +205,47 @@ export const useWorkflowStore = defineStore('workflow', {
     async insert(data = {}, options = {}) {
       const insertedWorkflows = {};
 
-      if (Array.isArray(data)) {
-        data.forEach((item) => {
-          if (!options.duplicateId) {
-            delete item.id;
-          }
-
-          const workflow = defaultWorkflow(item, options);
-          this.workflows[workflow.id] = workflow;
-          insertedWorkflows[workflow.id] = workflow;
-        });
-      } else {
+      const insertSingle = async (item) => {
         if (!options.duplicateId) {
-          delete data.id;
+          delete item.id;
         }
 
-        const workflow = defaultWorkflow(data, options);
-        this.workflows[workflow.id] = workflow;
-        insertedWorkflows[workflow.id] = workflow;
+        const workflow = defaultWorkflow(item, options);
+
+        // Build API payload matching ActionWorkflowCreateSchema
+        const { name, code, platform_code, description, ...automaConfig } =
+          workflow;
+        const apiPayload = {
+          name: name || 'Untitled',
+          code: code || `wf_${Date.now()}`,
+          platform_code: platform_code || 'default',
+          description: description || null,
+          workflow_config: {
+            drawflow: automaConfig.drawflow,
+            settings: automaConfig.settings,
+            globalData: automaConfig.globalData,
+            table: automaConfig.table,
+            dataColumns: automaConfig.dataColumns,
+          },
+        };
+
+        // Create on backend API first
+        const created = await apiCreateWorkflow(apiPayload);
+        const finalWorkflow = { ...workflow, id: created.id, ...created };
+
+        this.workflows[finalWorkflow.id] = finalWorkflow;
+        insertedWorkflows[finalWorkflow.id] = finalWorkflow;
+      };
+
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          await insertSingle(item);
+        }
+      } else {
+        await insertSingle(data);
       }
 
+      // Update local cache
       await this.saveToStorage('workflows');
 
       return insertedWorkflows;
@@ -172,7 +257,8 @@ export const useWorkflowStore = defineStore('workflow', {
       const updatedWorkflows = {};
       const updateData = { ...data, updatedAt: Date.now() };
 
-      const workflowUpdater = (workflowId) => {
+      const workflowUpdater = async (workflowId) => {
+        // Optimistic update: update local state immediately
         if (deep) {
           this.workflows[workflowId] = deepmerge(
             this.workflows[workflowId],
@@ -185,29 +271,55 @@ export const useWorkflowStore = defineStore('workflow', {
         this.workflows[workflowId].updatedAt = Date.now();
         updatedWorkflows[workflowId] = this.workflows[workflowId];
 
-        if (!('isDisabled' in data)) return;
-
-        if (data.isDisabled) {
-          cleanWorkflowTriggers(workflowId);
-        } else {
-          const triggerBlock = this.workflows[workflowId].drawflow.nodes?.find(
-            (node) => node.label === 'trigger'
-          );
-          if (triggerBlock) {
-            registerWorkflowTrigger(id, triggerBlock);
+        if ('isDisabled' in data) {
+          if (data.isDisabled) {
+            cleanWorkflowTriggers(workflowId);
+          } else {
+            const triggerBlock = this.workflows[
+              workflowId
+            ].drawflow.nodes?.find((node) => node.label === 'trigger');
+            if (triggerBlock) {
+              registerWorkflowTrigger(workflowId, triggerBlock);
+            }
           }
+        }
+
+        // Push update to backend API
+        // API expects UpdateWorkflowConfigRequest: { workflow_config, changelog, update_type }
+        try {
+          const wf = this.workflows[workflowId];
+          const apiPayload = {
+            workflow_config: {
+              drawflow: wf.drawflow,
+              settings: wf.settings,
+              globalData: wf.globalData,
+              table: wf.table,
+              dataColumns: wf.dataColumns,
+              name: wf.name,
+              description: wf.description,
+              icon: wf.icon,
+              trigger: wf.trigger,
+              isDisabled: wf.isDisabled,
+            },
+            changelog: data.changelog || 'Updated from extension',
+            update_type: 'auto',
+          };
+          await apiUpdateWorkflow(workflowId, apiPayload);
+        } catch (error) {
+          console.error('[WorkflowStore] API update failed:', error);
         }
       };
 
       if (isFunction) {
-        this.getWorkflows.forEach((workflow) => {
+        for (const workflow of this.getWorkflows) {
           const isMatch = id(workflow) ?? false;
-          if (isMatch) workflowUpdater(workflow.id);
-        });
+          if (isMatch) await workflowUpdater(workflow.id);
+        }
       } else {
-        workflowUpdater(id);
+        await workflowUpdater(id);
       }
 
+      // Update local cache
       await this.saveToStorage('workflows');
 
       return updatedWorkflows;
@@ -218,7 +330,7 @@ export const useWorkflowStore = defineStore('workflow', {
     ) {
       const insertedData = {};
 
-      data.forEach((item) => {
+      for (const item of data) {
         const currentWorkflow = this.workflows[item.id];
 
         if (currentWorkflow) {
@@ -232,67 +344,98 @@ export const useWorkflowStore = defineStore('workflow', {
 
             this.workflows[item.id] = mergedData;
             insertedData[item.id] = mergedData;
+
+            try {
+              const wf = mergedData;
+              await apiUpdateWorkflow(item.id, {
+                workflow_config: {
+                  drawflow: wf.drawflow,
+                  settings: wf.settings,
+                  globalData: wf.globalData,
+                  table: wf.table,
+                  dataColumns: wf.dataColumns,
+                  name: wf.name,
+                  description: wf.description,
+                  icon: wf.icon,
+                  trigger: wf.trigger,
+                  isDisabled: wf.isDisabled,
+                },
+                changelog: 'Sync from extension',
+                update_type: 'auto',
+              });
+            } catch (error) {
+              console.error('[WorkflowStore] API upsert-update failed:', error);
+            }
           }
         } else {
           const workflow = defaultWorkflow(item, { duplicateId });
           this.workflows[workflow.id] = workflow;
           insertedData[workflow.id] = workflow;
+
+          try {
+            const { name, code, platform_code, description, ...automaConfig } =
+              workflow;
+            await apiCreateWorkflow({
+              name: name || 'Untitled',
+              code: code || `wf_${Date.now()}`,
+              platform_code: platform_code || 'default',
+              description: description || null,
+              workflow_config: {
+                drawflow: automaConfig.drawflow,
+                settings: automaConfig.settings,
+                globalData: automaConfig.globalData,
+                table: automaConfig.table,
+                dataColumns: automaConfig.dataColumns,
+              },
+            });
+          } catch (error) {
+            console.error('[WorkflowStore] API upsert-create failed:', error);
+          }
         }
-      });
+      }
 
       await this.saveToStorage('workflows');
 
       return insertedData;
     },
     async delete(id) {
-      if (Array.isArray(id)) {
-        id.forEach((workflowId) => {
-          delete this.workflows[workflowId];
-        });
-      } else {
-        delete this.workflows[id];
+      const ids = Array.isArray(id) ? id : [id];
+
+      // Delete from backend API
+      for (const workflowId of ids) {
+        try {
+          await apiDeleteWorkflow(workflowId);
+        } catch (error) {
+          console.error('[WorkflowStore] API delete failed:', error);
+        }
+
+        delete this.workflows[workflowId];
       }
 
       await cleanWorkflowTriggers(id);
 
-      const userStore = useUserStore();
+      // Old hosted/backup cleanup disabled — feature not active
+      // const userStore = useUserStore();
+      // const hostedWorkflow = userStore.hostedWorkflows[id];
+      // const backupIndex = userStore.backupIds.indexOf(id);
 
-      const hostedWorkflow = userStore.hostedWorkflows[id];
-      const backupIndex = userStore.backupIds.indexOf(id);
-
-      if (hostedWorkflow || backupIndex !== -1) {
-        const response = await fetchApi(`/me/workflows?id=${id}`, {
-          auth: true,
-          method: 'DELETE',
-        });
-        const result = await response.json();
-
-        if (!response.ok) {
-          throw new Error(result.message);
-        }
-
-        if (backupIndex !== -1) {
-          userStore.backupIds.splice(backupIndex, 1);
-          await browser.storage.local.set({ backupIds: userStore.backupIds });
-        }
-      }
-
-      await browser.storage.local.remove([
-        `state:${id}`,
-        `draft:${id}`,
-        `draft-team:${id}`,
+      // Clean up local storage artifacts
+      const storageKeysToRemove = ids.flatMap((wfId) => [
+        `state:${wfId}`,
+        `draft:${wfId}`,
+        `draft-team:${wfId}`,
       ]);
+      await browser.storage.local.remove(storageKeysToRemove);
       await this.saveToStorage('workflows');
 
       const { pinnedWorkflows } = await browser.storage.local.get(
         'pinnedWorkflows'
       );
-      const pinnedWorkflowIndex = pinnedWorkflows
-        ? pinnedWorkflows.indexOf(id)
-        : -1;
-      if (pinnedWorkflowIndex !== -1) {
-        pinnedWorkflows.splice(pinnedWorkflowIndex, 1);
-        await browser.storage.local.set({ pinnedWorkflows });
+      if (pinnedWorkflows) {
+        const filtered = pinnedWorkflows.filter((pId) => !ids.includes(pId));
+        if (filtered.length !== pinnedWorkflows.length) {
+          await browser.storage.local.set({ pinnedWorkflows: filtered });
+        }
       }
 
       return id;

@@ -1,5 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
+import { isAuthenticated } from '@/utils/auth';
 import Welcome from './pages/Welcome.vue';
+import Login from './pages/Login.vue';
 import Packages from './pages/Packages.vue';
 import Workflows from './pages/workflows/index.vue';
 import WorkflowContainer from './pages/Workflows.vue';
@@ -26,25 +28,33 @@ const routes = [
     component: Workflows,
   },
   {
+    name: 'login',
+    path: '/login',
+    component: Login,
+    meta: { requiresAuth: false },
+  },
+  {
     name: 'welcome',
     path: '/welcome',
     component: Welcome,
+    meta: { requiresAuth: false },
   },
-  {
-    name: 'packages',
-    path: '/packages',
-    component: Packages,
-  },
+  // {
+  //   name: 'packages',
+  //   path: '/packages',
+  //   component: Packages,
+  // },
   {
     name: 'recording',
     path: '/recording',
     component: Recording,
+    meta: { requiresAuth: false },
   },
-  {
-    name: 'packages-details',
-    path: '/packages/:id',
-    component: WorkflowDetails,
-  },
+  // {
+  //   name: 'packages-details',
+  //   path: '/packages/:id',
+  //   component: WorkflowDetails,
+  // },
   {
     path: '/workflows',
     component: WorkflowContainer,
@@ -69,11 +79,11 @@ const routes = [
         path: '/workflows/:id/host',
         component: WorkflowHost,
       },
-      {
-        name: 'workflow-shared',
-        path: '/workflows/:id/shared',
-        component: WorkflowShared,
-      },
+      // {
+      //   name: 'workflow-shared',
+      //   path: '/workflows/:id/shared',
+      //   component: WorkflowShared,
+      // },
     ],
   },
   {
@@ -102,14 +112,40 @@ const routes = [
     children: [
       { path: '', component: SettingsIndex },
       { path: '/about', component: SettingsAbout },
-      { path: '/backup', component: SettingsBackup },
+      // { path: '/backup', component: SettingsBackup }, // disabled: backup feature hidden
       { path: '/editor', component: SettingsEditor },
       { path: '/shortcuts', component: SettingsShortcuts },
     ],
   },
 ];
 
-export default createRouter({
+const router = createRouter({
   routes,
   history: createWebHashHistory(),
 });
+
+router.beforeEach(async (to, from, next) => {
+  // Routes that don't require auth
+  if (to.meta.requiresAuth === false) {
+    if (to.name === 'login') {
+      const authed = await isAuthenticated();
+      if (authed) {
+        next('/workflows');
+        return;
+      }
+    }
+    next();
+    return;
+  }
+
+  // All other routes require auth
+  const authed = await isAuthenticated();
+  if (!authed) {
+    next('/login');
+    return;
+  }
+
+  next();
+});
+
+export default router;

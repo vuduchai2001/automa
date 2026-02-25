@@ -1,3 +1,4 @@
+require('dotenv').config();
 const webpack = require('webpack');
 const path = require('path');
 const fileSystem = require('fs-extra');
@@ -146,6 +147,10 @@ const options = {
     new VueLoaderPlugin(),
     new webpack.DefinePlugin({
       BROWSER_TYPE: JSON.stringify(env.BROWSER),
+      'process.env.BACKEND_API_URL': JSON.stringify(
+        process.env.BACKEND_API_URL || ''
+      ),
+      'process.env.WS_URL': JSON.stringify(process.env.WS_URL || ''),
     }),
     new webpack.ProgressPlugin(),
     // clean the build folder

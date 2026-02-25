@@ -106,7 +106,7 @@
                   {{ t('workflow.type.local') }}
                 </span>
               </ui-list-item>
-              <ui-list-item
+              <!-- <ui-list-item
                 v-if="userStore.user"
                 :active="state.activeTab === 'shared'"
                 tag="button"
@@ -129,7 +129,7 @@
                 <span class="capitalize">
                   {{ t('workflow.type.host') }}
                 </span>
-              </ui-list-item>
+              </ui-list-item> -->
             </ui-list>
           </ui-expand>
         </ui-list>
@@ -195,7 +195,7 @@
           </div>
           <div class="grow"></div>
           <div class="mt-4 flex w-full items-center md:mt-0 md:w-auto">
-            <span
+            <!-- <span
               v-tooltip:bottom.group="t('workflow.backupCloud')"
               class="mr-4"
             >
@@ -207,7 +207,7 @@
               >
                 <v-remixicon name="riUploadCloud2Line" />
               </ui-button>
-            </span>
+            </span> -->
             <div class="workflow-sort flex flex-1 items-center">
               <ui-button
                 icon
@@ -238,12 +238,12 @@
               <option value="local">
                 {{ t('workflow.type.local') }}
               </option>
-              <option v-if="userStore.user" value="shared">
+              <!-- <option v-if="userStore.user" value="shared">
                 {{ t('workflow.type.shared') }}
               </option>
               <option v-if="hostedWorkflows?.length > 0" value="host">
                 {{ t('workflow.type.host') }}
-              </option>
+              </option> -->
             </ui-select>
           </div>
         </div>
@@ -256,7 +256,7 @@
               :sort="{ by: state.sortBy, order: state.sortOrder }"
             />
           </ui-tab-panel>
-          <ui-tab-panel value="shared">
+          <!-- <ui-tab-panel value="shared">
             <workflows-shared
               :search="state.query"
               :sort="{ by: state.sortBy, order: state.sortOrder }"
@@ -267,7 +267,7 @@
               :search="state.query"
               :sort="{ by: state.sortBy, order: state.sortOrder }"
             />
-          </ui-tab-panel>
+          </ui-tab-panel> -->
           <ui-tab-panel value="local">
             <workflows-local
               v-model:per-page="state.perPage"
@@ -329,6 +329,27 @@
             : startRecordWorkflow()
         "
       />
+      <ui-input
+        v-model="addWorkflowModal.code"
+        placeholder="Code (e.g. wf_tiktok_like_video)"
+        class="mb-4 w-full"
+      />
+      <label class="mb-1 block text-sm text-gray-600 dark:text-gray-300">
+        Platform
+      </label>
+      <select
+        v-model="addWorkflowModal.platform_code"
+        class="mb-4 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+      >
+        <option value="" disabled>Select platform</option>
+        <option
+          v-for="p in platforms"
+          :key="p.code"
+          :value="p.code"
+        >
+          {{ p.name }}
+        </option>
+      </select>
       <ui-textarea
         v-model="addWorkflowModal.description"
         :placeholder="t('common.description')"
@@ -385,7 +406,7 @@ import { fetchApi } from '@/utils/api';
 import { findTriggerBlock, isWhitespace } from '@/utils/helper';
 import { getWorkflowPermissions, importWorkflow } from '@/utils/workflowData';
 import { registerWorkflowTrigger } from '@/utils/workflowTrigger';
-import { computed, onMounted, shallowReactive, watch } from 'vue';
+import { computed, onMounted, ref, shallowReactive, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useToast } from 'vue-toastification';
@@ -420,6 +441,8 @@ const state = shallowReactive({
 });
 const addWorkflowModal = shallowReactive({
   name: '',
+  code: '',
+  platform_code: '',
   show: false,
   type: 'manual',
   description: '',
@@ -428,12 +451,15 @@ const permissionState = shallowReactive({
   items: [],
   showModal: false,
 });
+const platforms = ref([]);
 
 const hostedWorkflows = computed(() => hostedWorkflowStore.toArray);
 
 function clearAddWorkflowModal() {
   Object.assign(addWorkflowModal, {
     name: '',
+    code: '',
+    platform_code: '',
     show: false,
     type: 'manual',
     description: '',
@@ -478,6 +504,8 @@ function addWorkflow() {
   workflowStore
     .insert({
       name: addWorkflowModal.name,
+      code: addWorkflowModal.code,
+      platform_code: addWorkflowModal.platform_code,
       folderId: state.activeFolder,
       description: addWorkflowModal.description,
     })
@@ -615,7 +643,7 @@ watch(
   { immediate: true }
 );
 
-onMounted(() => {
+onMounted(async () => {
   const teams = [];
   let unknownInputted = false;
   Object.keys(teamWorkflowStore.workflows).forEach((id) => {
@@ -632,6 +660,17 @@ onMounted(() => {
   });
 
   state.teams = teams;
+
+  // Fetch platforms for workflow creation
+  try {
+    const response = await fetchApi('/api/v1/control/platforms', { auth: true });
+    if (response.ok) {
+      const result = await response.json();
+      platforms.value = result.data || result;
+    }
+  } catch (e) {
+    console.error('[Workflows] Failed to fetch platforms:', e);
+  }
 });
 </script>
 <style>

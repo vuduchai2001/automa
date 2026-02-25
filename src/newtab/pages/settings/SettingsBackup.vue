@@ -212,7 +212,7 @@ import dbStorage from '@/db/storage';
 import { readableCron } from '@/lib/cronstrue';
 import { useUserStore } from '@/stores/user';
 import { useWorkflowStore } from '@/stores/workflow';
-import { getUserWorkflows } from '@/utils/api';
+import { getUserWorkflows } from '@/utils/nativeApi';
 import { fileSaver, openFilePicker, parseJSON } from '@/utils/helper';
 import cronParser from 'cron-parser';
 import AES from 'crypto-js/aes';

@@ -1,3 +1,3 @@
 export default {
-  baseApiUrl: '',
+  baseApiUrl: process.env.BACKEND_API_URL || '',
 };

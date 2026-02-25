@@ -370,22 +370,22 @@ class WorkflowWorker {
         }
       } else {
         // Workflow completed successfully - take final screenshot
-        await ScreenshotManager.takeScreenshotOnSuccess(
-          block,
-          this.activeTab,
-          this.engine.id
-        );
+        // await ScreenshotManager.takeScreenshotOnSuccess(
+        //   block,
+        //   this.activeTab,
+        //   this.engine.id
+        // );
         this.engine.destroyWorker(this.id);
       }
     } catch (error) {
       console.error(error);
       // Take screenshot on error
-      await ScreenshotManager.takeScreenshotOnError(
-        error,
-        block,
-        this.activeTab,
-        this.engine.id
-      );
+      // await ScreenshotManager.takeScreenshotOnError(
+      //   error,
+      //   block,
+      //   this.activeTab,
+      //   this.engine.id
+      // );
 
       const errorLogData = {
         message: error.message,
