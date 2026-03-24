@@ -85,9 +85,36 @@
       </ui-list-item>
     </ui-list>
   </div>
+  <ui-modal
+    v-model="newFolderState.show"
+    :title="t('workflows.folder.new')"
+    @close="clearNewFolder"
+  >
+    <ui-input
+      v-model="newFolderState.name"
+      :placeholder="t('workflows.folder.name')"
+      autofocus
+      class="w-full"
+      @keyup.enter="submitNewFolder"
+    />
+    <ui-input
+      v-model="newFolderState.code"
+      placeholder="Code"
+      class="mt-2 w-full"
+      @keyup.enter="submitNewFolder"
+    />
+    <div class="mt-6 flex space-x-4">
+      <ui-button class="flex-1" @click="clearNewFolder">
+        {{ t('common.cancel') }}
+      </ui-button>
+      <ui-button class="flex-1" variant="accent" @click="submitNewFolder">
+        {{ t('common.add') }}
+      </ui-button>
+    </div>
+  </ui-modal>
 </template>
 <script setup>
-import { computed } from 'vue';
+import { computed, reactive } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useDialog } from '@/composable/dialog';
 import { parseJSON } from '@/utils/helper';
@@ -108,6 +135,12 @@ const dialog = useDialog();
 const folderStore = useFolderStore();
 const workflowStore = useWorkflowStore();
 
+const newFolderState = reactive({
+  show: false,
+  name: '',
+  code: '',
+});
+
 const folders = computed(() => folderStore.items);
 
 function exportFolderWorkflows(folderId) {
@@ -126,18 +159,19 @@ function onDragover(event, toggle) {
   parent.classList.toggle('ring-2', toggle);
 }
 function newFolder() {
-  dialog.prompt({
-    title: t('workflows.folder.new'),
-    placeholder: t('workflows.folder.name'),
-    okText: t('common.add'),
-    onConfirm(value) {
-      if (!value || !value.trim()) return false;
+  newFolderState.show = true;
+}
+function clearNewFolder() {
+  Object.assign(newFolderState, { show: false, name: '', code: '' });
+}
+function submitNewFolder() {
+  if (!newFolderState.name || !newFolderState.name.trim()) return;
 
-      folderStore.addFolder(value);
-
-      return true;
-    },
+  folderStore.addFolder({
+    name: newFolderState.name.trim(),
+    code: newFolderState.code.trim(),
   });
+  clearNewFolder();
 }
 function deleteFolder({ name, id }) {
   dialog.confirm({

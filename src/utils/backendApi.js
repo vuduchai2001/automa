@@ -1,36 +1,15 @@
-import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
+import secrets from 'secrets';
 
 /**
  * Backend API utility class for managing all backend communication
  */
 class BackendAPI {
   /**
-   * Get backend base URL from WebSocket configuration
-   * @returns {Promise<string|null>} Base URL or null if not configured
+   * Get runtime service base URL
+   * @returns {string|null} Base URL or null if not configured
    */
-  static async getBackendBaseUrl() {
-    try {
-      const { wsConfig } = await BrowserAPIService.storage.local.get(
-        'wsConfig'
-      );
-
-      if (!wsConfig || !wsConfig.url) {
-        // eslint-disable-next-line no-console
-        console.warn('⚠️ [BackendAPI] No WebSocket config found');
-        return null;
-      }
-
-      // Extract base URL from WebSocket URL
-      const baseUrl = wsConfig.url
-        .replace('ws://', 'http://')
-        .replace('wss://', 'https://');
-
-      return baseUrl;
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('❌ [BackendAPI] Error getting backend URL:', error);
-      return null;
-    }
+  static getBackendBaseUrl() {
+    return secrets.runtimeApiUrl || null;
   }
 
   /**
@@ -40,7 +19,7 @@ class BackendAPI {
    */
   async sendWorkflowLog(data) {
     try {
-      const baseUrl = await this.constructor.getBackendBaseUrl();
+      const baseUrl = this.constructor.getBackendBaseUrl();
       if (!baseUrl) {
         throw new Error('Backend URL not configured');
       }
@@ -129,7 +108,7 @@ class BackendAPI {
         parametersCount: Object.keys(parameters).length,
       });
 
-      const baseUrl = await this.constructor.getBackendBaseUrl();
+      const baseUrl = this.constructor.getBackendBaseUrl();
       if (!baseUrl) {
         throw new Error('Backend URL not configured');
       }
@@ -212,7 +191,7 @@ class BackendAPI {
       // eslint-disable-next-line no-console
       console.log('📊 [BackendAPI] Getting workflow status:', executionId);
 
-      const baseUrl = await this.constructor.getBackendBaseUrl();
+      const baseUrl = this.constructor.getBackendBaseUrl();
       if (!baseUrl) {
         throw new Error('Backend URL not configured');
       }
@@ -281,7 +260,7 @@ class BackendAPI {
    */
   async getWorkflowLogs(workflowId, options = {}) {
     try {
-      const baseUrl = await this.constructor.getBackendBaseUrl();
+      const baseUrl = this.constructor.getBackendBaseUrl();
       if (!baseUrl) {
         throw new Error('Backend URL not configured');
       }
@@ -349,7 +328,7 @@ class BackendAPI {
    */
   async sendScreenshot(data) {
     try {
-      const baseUrl = await this.constructor.getBackendBaseUrl();
+      const baseUrl = this.constructor.getBackendBaseUrl();
       if (!baseUrl) {
         throw new Error('Backend URL not configured');
       }
@@ -419,7 +398,7 @@ class BackendAPI {
       // eslint-disable-next-line no-console
       console.log('🔍 [BackendAPI] Testing backend connection');
 
-      const baseUrl = await this.constructor.getBackendBaseUrl();
+      const baseUrl = this.constructor.getBackendBaseUrl();
       if (!baseUrl) {
         return {
           success: false,

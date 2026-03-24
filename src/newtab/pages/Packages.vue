@@ -187,6 +187,12 @@
         class="w-full"
         @keyup.enter="addPackage"
       />
+      <ui-input
+        v-model="addState.code"
+        placeholder="Code"
+        class="mt-2 w-full"
+        @keyup.enter="addPackage"
+      />
       <ui-textarea
         v-model="addState.description"
         :placeholder="t('common.description')"
@@ -235,6 +241,7 @@ const sortState = reactive({
 const addState = reactive({
   show: false,
   name: '',
+  code: '',
   description: '',
 });
 
@@ -308,6 +315,7 @@ function deletePackage({ id, name }) {
 function clearNewPackage() {
   Object.assign(addState, {
     name: '',
+    code: '',
     show: false,
     description: '',
   });
@@ -316,6 +324,7 @@ async function addPackage() {
   try {
     await packageStore.insert({
       name: addState.name.trim() || 'Unnamed',
+      code: addState.code.trim(),
       description: addState.description,
     });
 

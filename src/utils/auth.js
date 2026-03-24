@@ -12,7 +12,7 @@ const IAM_BASE = '/api/v1/iam';
  */
 export async function login(email, password) {
   const response = await fetch(
-    `${secrets.baseApiUrl}${IAM_BASE}/auth/login/password`,
+    `${secrets.iamApiUrl}${IAM_BASE}/auth/login/password`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -85,7 +85,7 @@ export async function refreshToken() {
   );
   if (!session?.refresh_token) throw new Error('No refresh token');
 
-  const response = await fetch(`${secrets.baseApiUrl}${IAM_BASE}/auth/rotate`, {
+  const response = await fetch(`${secrets.iamApiUrl}${IAM_BASE}/auth/rotate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: session.refresh_token }),

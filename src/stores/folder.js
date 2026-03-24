@@ -17,8 +17,9 @@ export const useFolderStore = defineStore('folder', {
     retrieved: false,
   }),
   actions: {
-    async addFolder(name) {
-      const created = await createFolder({ name });
+    async addFolder(data) {
+      const payload = typeof data === 'string' ? { name: data } : data;
+      const created = await createFolder(payload);
       this.items.push(created);
       await this.saveToStorage('items');
       return created;
@@ -61,8 +62,10 @@ export const useFolderStore = defineStore('folder', {
         if (!authenticated) return this.items;
 
         const apiFolders = await fetchFolders();
-        this.items = apiFolders;
-        await this.saveToStorage('items');
+        if (Array.isArray(apiFolders) && apiFolders.length > 0) {
+          this.items = apiFolders;
+          await this.saveToStorage('items');
+        }
 
         return this.items;
       } catch (error) {

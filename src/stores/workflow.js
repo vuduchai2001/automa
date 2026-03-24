@@ -145,28 +145,25 @@ export const useWorkflowStore = defineStore('workflow', {
         if (!authenticated) return;
 
         const apiWorkflows = await apiFetchWorkflows();
-        const workflowsObj = {};
+        if (!Array.isArray(apiWorkflows) || apiWorkflows.length === 0) return;
+
+        // The list endpoint returns summary data (no workflow_config).
+        // Merge API metadata with existing local data to preserve configs.
+        const mergedWorkflows = { ...this.workflows };
 
         apiWorkflows.forEach((apiWf) => {
-          // Map API response (ActionWorkflowResponse/ListItem) to client format
+          const existing = mergedWorkflows[apiWf.id];
           const config = apiWf.workflow_config || {};
-          const workflow = {
+          const hasConfig = !!apiWf.workflow_config;
+
+          // API metadata (always from server)
+          const apiMeta = {
             id: apiWf.id,
             name: apiWf.name,
             code: apiWf.code,
             platform_code: apiWf.platform_code,
             description: apiWf.description || '',
-            icon: config.icon || 'riGlobalLine',
-            folderId: config.folderId || null,
-            drawflow: config.drawflow || { edges: [], zoom: 1.3, nodes: [] },
-            settings: config.settings || {},
-            globalData: config.globalData || '{\n\t"key": "value"\n}',
-            table: config.table || [],
-            dataColumns: config.dataColumns || [],
-            trigger: config.trigger || null,
-            isDisabled: config.isDisabled || false,
-            content: config.content || null,
-            connectedTable: config.connectedTable || null,
+            folderId: apiWf.folder_id || null,
             version: apiWf.version || '',
             status: apiWf.status || 'draft',
             createdAt: apiWf.created_at
@@ -177,20 +174,43 @@ export const useWorkflowStore = defineStore('workflow', {
               : Date.now(),
           };
 
-          if (typeof workflow.drawflow === 'string') {
-            try {
-              workflow.drawflow = JSON.parse(workflow.drawflow);
-            } catch {
-              // keep as-is if parse fails
+          if (existing) {
+            // Merge: update metadata from API, keep local config (drawflow, settings, etc.)
+            Object.assign(existing, apiMeta);
+            // Only overwrite config fields if API actually returned workflow_config
+            if (hasConfig) {
+              existing.icon = config.icon || existing.icon || 'riGlobalLine';
+              existing.drawflow = config.drawflow || existing.drawflow;
+              existing.settings = config.settings || existing.settings;
+              existing.globalData = config.globalData || existing.globalData;
+              existing.table = config.table || existing.table;
+              existing.dataColumns = config.dataColumns || existing.dataColumns;
+              existing.trigger = config.trigger ?? existing.trigger;
+              existing.isDisabled = config.isDisabled ?? existing.isDisabled;
+              existing.content = config.content ?? existing.content;
+              existing.connectedTable =
+                config.connectedTable ?? existing.connectedTable;
             }
+          } else {
+            // New workflow from API not in local cache
+            mergedWorkflows[apiWf.id] = {
+              ...apiMeta,
+              icon: config.icon || 'riGlobalLine',
+              drawflow: config.drawflow || { edges: [], zoom: 1.3, nodes: [] },
+              settings: config.settings || {},
+              globalData: config.globalData || '{\n\t"key": "value"\n}',
+              table: config.table || [],
+              dataColumns: config.dataColumns || [],
+              trigger: config.trigger || null,
+              isDisabled: config.isDisabled || false,
+              content: config.content || null,
+              connectedTable: config.connectedTable || null,
+            };
           }
-          workflowsObj[workflow.id] = workflow;
         });
 
-        this.workflows = workflowsObj;
-
-        // Update local cache
-        await browser.storage.local.set({ workflows: workflowsObj });
+        this.workflows = mergedWorkflows;
+        await browser.storage.local.set({ workflows: mergedWorkflows });
       } catch (error) {
         console.error(
           '[WorkflowStore] Failed to load from API, using cache:',

@@ -4,6 +4,13 @@ import { isObject, parseJSON } from './helper';
 
 export async function fetchApi(path, options = {}) {
   const urlPath = path.startsWith('/') ? path : `/${path}`;
+  const baseUrl = options.baseUrl || secrets.controlApiUrl;
+  delete options.baseUrl;
+
+  // Always clean up auth flag so it doesn't leak into fetch()
+  const needsAuth = !!options.auth;
+  delete options.auth;
+
   const headers = {
     'Content-Type': 'application/json',
     ...(options?.headers || {}),
@@ -12,14 +19,12 @@ export async function fetchApi(path, options = {}) {
   const { session } = (await BrowserAPIService.storage.local.get(
     'session'
   )) || { session: null };
-  if (session && options?.auth) {
-    delete options.auth;
-
+  if (session && needsAuth) {
     let token = session.access_token;
 
     if (Date.now() > (session.expires_at - 2000) * 1000) {
       const response = await fetch(
-        `${secrets.baseApiUrl}/api/v1/iam/auth/rotate`,
+        `${secrets.iamApiUrl}/api/v1/iam/auth/rotate`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -48,7 +53,7 @@ export async function fetchApi(path, options = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const url = `${secrets.baseApiUrl}${urlPath}`;
+  const url = `${baseUrl}${urlPath}`;
 
   const response = await fetch(url, {
     ...options,

@@ -1,5 +1,6 @@
 import { cacheApi, fetchApi } from '@/utils/api';
 import { logout as authLogout, isAuthenticated } from '@/utils/auth';
+import secrets from 'secrets';
 import { defineStore } from 'pinia';
 import browser from 'webextension-polyfill';
 
@@ -44,6 +45,7 @@ export const useUserStore = defineStore('user', {
 
               const response = await fetchApi('/api/v1/iam/users/me', {
                 auth: true,
+                baseUrl: secrets.iamApiUrl,
               });
               const result = await response.json();
 

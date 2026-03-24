@@ -1,11 +1,10 @@
 import { defineStore } from 'pinia';
 import browser from 'webextension-polyfill';
-import { fetchApi } from '@/utils/api';
 import { isAuthenticated } from '@/utils/auth';
 import {
   fetchPackages,
   createPackage,
-  updatePackage as apiUpdatePackage,
+  updatePackageConfig,
   deletePackage as apiDeletePackage,
 } from '@/utils/packageApi';
 
@@ -60,7 +59,7 @@ export const usePackageStore = defineStore('packages', {
       this.packages.push(finalPackage);
       await this.saveToStorage('packages');
     },
-    async update({ id, data }) {
+    async update({ id, data, changelog = '' }) {
       const index = this.packages.findIndex((pkg) => pkg.id === id);
       if (index === -1) return null;
 
@@ -69,7 +68,10 @@ export const usePackageStore = defineStore('packages', {
       await this.saveToStorage('packages');
 
       try {
-        await apiUpdatePackage(id, data);
+        await updatePackageConfig(id, {
+          workflow_config: data.workflow_config || data,
+          changelog: changelog || 'Update package config',
+        });
       } catch (error) {
         console.error('[PackageStore] API update failed:', error);
       }
@@ -110,8 +112,10 @@ export const usePackageStore = defineStore('packages', {
         if (!authenticated) return this.packages;
 
         const apiPackages = await fetchPackages();
-        this.packages = apiPackages;
-        await this.saveToStorage('packages');
+        if (Array.isArray(apiPackages) && apiPackages.length > 0) {
+          this.packages = apiPackages;
+          await this.saveToStorage('packages');
+        }
 
         return this.packages;
       } catch (error) {
@@ -124,21 +128,8 @@ export const usePackageStore = defineStore('packages', {
       }
     },
     async loadShared() {
-      try {
-        if (this.sharedRetrieved) return;
-
-        const response = await fetchApi('/me/packages', { auth: true });
-        const result = await response.json();
-
-        if (!response.ok) throw new Error(result.message);
-
-        this.sharedPkgs = result;
-        this.sharedRetrieved = true;
-      } catch (error) {
-        console.error(error.message);
-
-        throw error;
-      }
+      // Shared packages endpoint not available in new API
+      this.sharedRetrieved = true;
     },
   },
 });

@@ -147,8 +147,12 @@ const options = {
     new VueLoaderPlugin(),
     new webpack.DefinePlugin({
       BROWSER_TYPE: JSON.stringify(env.BROWSER),
-      'process.env.BACKEND_API_URL': JSON.stringify(
-        process.env.BACKEND_API_URL || ''
+      'process.env.IAM_API_URL': JSON.stringify(process.env.IAM_API_URL || ''),
+      'process.env.CONTROL_API_URL': JSON.stringify(
+        process.env.CONTROL_API_URL || ''
+      ),
+      'process.env.RUNTIME_API_URL': JSON.stringify(
+        process.env.RUNTIME_API_URL || ''
       ),
       'process.env.WS_URL': JSON.stringify(process.env.WS_URL || ''),
     }),

@@ -1,6 +1,7 @@
 import dbStorage from '@/db/storage';
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
 import backendApi from '@/utils/backendApi';
+import WorkerApiClient from '@/utils/workerApiClient';
 import { getBlocks } from '@/utils/getSharedData';
 import { clearCache, isObject, parseJSON, sleep } from '@/utils/helper';
 import cloneDeep from 'lodash.clonedeep';
@@ -374,6 +375,22 @@ class WorkflowEngine {
     }
 
     this.history.push(detail);
+
+    // Send action-log to worker internal API (worker-triggered mode only)
+    console.log('start send action log', detail, '\n', this.options);
+    if (this.options?.workerContext) {
+      WorkerApiClient.sendActionLog(this.options.workerContext, {
+        logLevel: detail.type === 'error' ? 'error' : 'info',
+        logType: 'general',
+        message: `Block ${detail.name} ${detail.type || 'executed'}`,
+        logData: {
+          blockId: detail.blockId,
+          blockName: detail.name,
+          blockLabel: detail.label,
+          duration: detail.duration,
+        },
+      }).catch(() => {});
+    }
   }
 
   async stop() {
@@ -491,9 +508,29 @@ class WorkflowEngine {
             endedAt: new Date(endedTimestamp).toISOString(),
           },
         };
-        backendApi.sendWorkflowLog(logData).catch((err) => {
-          console.error('[WorkflowEngine] Failed to report log:', err);
-        });
+        // backendApi.sendWorkflowLog(logData).catch((err) => {
+        //   console.error('[WorkflowEngine] Failed to report log:', err);
+        // });
+
+        // Send workflow-log + finish-job to worker internal API
+        if (this.options?.workerContext) {
+          const { workerContext } = this.options;
+
+          WorkerApiClient.sendWorkflowLog(workerContext, {
+            logLevel: status === 'error' ? 'error' : 'info',
+            logType: 'workflow',
+            message: message || `Workflow ${status}`,
+            logData: {
+              workflowId: this.workflow.id,
+              workflowName: this.workflow.name,
+              status,
+              startedAt: new Date(this.startedTimestamp).toISOString(),
+              endedAt: new Date(endedTimestamp).toISOString(),
+            },
+          }).catch(() => {});
+
+          WorkerApiClient.sendFinishJob(workerContext).catch(() => {});
+        }
       }
 
       this.dispatchEvent('destroyed', {

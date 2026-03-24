@@ -39,22 +39,22 @@ const routes = [
     component: Welcome,
     meta: { requiresAuth: false },
   },
-  // {
-  //   name: 'packages',
-  //   path: '/packages',
-  //   component: Packages,
-  // },
+  {
+    name: 'packages',
+    path: '/packages',
+    component: Packages,
+  },
   {
     name: 'recording',
     path: '/recording',
     component: Recording,
     meta: { requiresAuth: false },
   },
-  // {
-  //   name: 'packages-details',
-  //   path: '/packages/:id',
-  //   component: WorkflowDetails,
-  // },
+  {
+    name: 'packages-details',
+    path: '/packages/:id',
+    component: WorkflowDetails,
+  },
   {
     path: '/workflows',
     component: WorkflowContainer,

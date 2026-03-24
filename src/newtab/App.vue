@@ -212,9 +212,9 @@ function stopRecording() {
 }
 
 const messageEvents = {
-  // 'refresh-packages': function () {  // disabled: packages feature hidden
-  //   packageStore.loadData(true);
-  // },
+  'refresh-packages': function () {
+    packageStore.loadData(true);
+  },
   'open-logs': function (data) {
     emitter.emit('ui:logs', {
       show: true,
@@ -362,7 +362,7 @@ if (profileId) {
       workflowStore.loadData(),
       teamWorkflowStore.loadData(),
       hostedWorkflowStore.loadData(),
-      // packageStore.loadData(), // disabled: packages feature hidden
+      packageStore.loadData(),
     ]);
 
     await loadLocaleMessages(store.settings.locale, 'newtab');
@@ -374,6 +374,13 @@ if (profileId) {
     await automa('app');
 
     retrieved.value = true;
+
+    // Trigger WebSocket reconnect check in background (handles F5 reload)
+    MessageListener.sendMessage(
+      'websocket:get-status',
+      null,
+      'background'
+    ).catch(() => {});
 
     await Promise.allSettled([
       // sharedWorkflowStore.fetchWorkflows(), // disabled: shared feature hidden

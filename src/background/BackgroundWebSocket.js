@@ -48,6 +48,11 @@ class BackgroundWebSocket {
       return;
     }
 
+    // Already connected — nothing to do
+    if (this.isConnected && this.ws?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
     this._initializing = true;
 
     try {
@@ -56,6 +61,24 @@ class BackgroundWebSocket {
       if (!session?.access_token) {
         console.info('[WebSocket] Not authenticated, skipping connection');
         return;
+      }
+
+      // Clean up stale connection if any
+      if (this.ws) {
+        try {
+          this.ws.close();
+        } catch (e) {
+          /* ignore */
+        }
+        this.ws = null;
+        this.isConnected = false;
+      }
+
+      // Reset reconnect state for fresh attempt
+      this.reconnectAttempts = 0;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
       }
 
       // Get or create installation ID
@@ -74,6 +97,15 @@ class BackgroundWebSocket {
       // Read profileId (bridged from page localStorage)
       const { profileId } = await browser.storage.local.get('profileId');
       this.profileId = profileId || null;
+
+      // Read worker internal API config from storage (injected by worker)
+      const { internalApiPort, internalApiSecret } =
+        await browser.storage.local.get([
+          'internalApiPort',
+          'internalApiSecret',
+        ]);
+      this.internalApiPort = internalApiPort || 9091;
+      this.internalApiSecret = internalApiSecret || null;
 
       // Get WebSocket config from storage
       const { wsConfig } = await browser.storage.local.get('wsConfig');
@@ -125,13 +157,18 @@ class BackgroundWebSocket {
    */
   async connect(url) {
     try {
-      // Get fresh JWT token for authentication
+      // Check auth before connecting — don't connect if not logged in
       const token = await getAccessToken();
-      const wsUrl = token
-        ? `${url}?profile_id=${encodeURIComponent(
-            this.profileId || '06990fa2-5ca2-7200-8000-b146c9821447'
-          )}`
-        : url;
+      if (!token) {
+        console.info('[WebSocket] No access token, skipping connection');
+        return;
+      }
+
+      // Only include profile_id if available — don't use hardcoded fallback
+      let wsUrl = url;
+      wsUrl = `${url}?profile_id=${encodeURIComponent(
+        this.profileId || '069a1c44-811f-728b-8000-72457b4d79db'
+      )}`;
 
       this.ws = new WebSocket(wsUrl);
 
@@ -160,7 +197,9 @@ class BackgroundWebSocket {
   async onOpen() {
     try {
       this.isConnected = true;
-      this.reconnectAttempts = 0;
+      // Don't reset reconnectAttempts here — wait until server confirms
+      // with 'welcome' message. Otherwise, if the server accepts TCP but
+      // rejects auth (closes connection), we'd loop forever.
 
       // Get fresh token for identify message
       const token = await getAccessToken();
@@ -202,6 +241,8 @@ class BackgroundWebSocket {
 
       switch (message?.command) {
         case 'welcome':
+          // Connection confirmed by server — safe to reset reconnect counter
+          this.reconnectAttempts = 0;
           break;
 
         case 'executeAction':
@@ -286,6 +327,16 @@ class BackgroundWebSocket {
         data: {
           variables: parsedVariables,
         },
+        workerContext: {
+          jobId: executionId,
+          actionId: params.action_id || null,
+          actionIndex:
+            typeof params.action_index === 'number' ? params.action_index : 0,
+          internalApiPort:
+            params.internal_api_port || this.internalApiPort || 9091,
+          internalApiSecret:
+            params.internal_api_secret || this.internalApiSecret || null,
+        },
       };
 
       // Track execution
@@ -297,7 +348,7 @@ class BackgroundWebSocket {
 
       // Send acknowledgment
       this.send({
-        type: 'workflow_started',
+        command: 'workflow_started',
         executionId,
         workflowId: workflowData.id,
         timestamp: Date.now(),
@@ -650,7 +701,7 @@ class BackgroundWebSocket {
    */
   onClose() {
     this.isConnected = false;
-
+    console.info('socket disconnected');
     // Update badge (non-blocking)
     try {
       const browserAction = browser.action || browser.browserAction;
@@ -682,6 +733,14 @@ class BackgroundWebSocket {
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
+
+      // Check auth before reconnecting — stop if user logged out
+      const { session } = await browser.storage.local.get('session');
+      if (!session?.access_token) {
+        console.info('[WebSocket] Not authenticated, stopping reconnect');
+        return;
+      }
+
       this.reconnectAttempts += 1;
 
       const { wsConfig } = await browser.storage.local.get('wsConfig');

@@ -80,6 +80,7 @@ import {
   riHtml5Line,
   riImageLine,
   riIncreaseDecreaseLine,
+  riIndeterminateCircleLine,
   riInformationLine,
   riInputCursorMove,
   riItalic,
@@ -279,6 +280,7 @@ export const icons = {
   riCheckboxCircleLine,
   riLightbulbFlashLine,
   riIncreaseDecreaseLine,
+  riIndeterminateCircleLine,
   riArrowRightLine,
   riArrowRightUpLine,
   riKey:

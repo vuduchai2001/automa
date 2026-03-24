@@ -149,12 +149,12 @@ const tabs = [
     path: '/workflows',
     shortcut: getShortcut('page:workflows', '/workflows'),
   },
-  // {
-  //   id: 'packages',
-  //   icon: 'mdiPackageVariantClosed',
-  //   path: '/packages',
-  //   shortcut: '',
-  // },
+  {
+    id: 'packages',
+    icon: 'mdiPackageVariantClosed',
+    path: '/packages',
+    shortcut: '',
+  },
   {
     id: 'schedule',
     icon: 'riTimeLine',

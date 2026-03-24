@@ -54,6 +54,8 @@ class WorkflowManager {
       }
     }
 
+    console.log('abcd', workflowData, '\n', options);
+
     const convertedWorkflow = convertWorkflowData(workflowData);
     const engine = new WorkflowEngine(convertedWorkflow, {
       options,
@@ -134,18 +136,18 @@ class WorkflowManager {
           ? dayjs().isSame(checkStatus, 'day')
           : false;
         if (!isSameDay || !checkStatus) {
-          backendApi
-            .testConnection()
-            .then((result) => {
-              if (result.success) {
-                BrowserAPIService.storage.local.set({
-                  checkStatus: new Date().toString(),
-                });
-              }
-            })
-            .catch((error) => {
-              console.error('[WorkflowManager] Status check failed:', error);
-            });
+          // backendApi
+          //   .testConnection()
+          //   .then((result) => {
+          //     if (result.success) {
+          //       BrowserAPIService.storage.local.set({
+          //         checkStatus: new Date().toString(),
+          //       });
+          //     }
+          //   })
+          //   .catch((error) => {
+          //     console.error('[WorkflowManager] Status check failed:', error);
+          //   });
         }
       })
       .catch((error) => {

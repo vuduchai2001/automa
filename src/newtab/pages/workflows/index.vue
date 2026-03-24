@@ -406,7 +406,13 @@ import { fetchApi } from '@/utils/api';
 import { findTriggerBlock, isWhitespace } from '@/utils/helper';
 import { getWorkflowPermissions, importWorkflow } from '@/utils/workflowData';
 import { registerWorkflowTrigger } from '@/utils/workflowTrigger';
-import { computed, onMounted, ref, shallowReactive, watch } from 'vue';
+import {
+  computed,
+  onMounted,
+  ref,
+  shallowReactive,
+  watch,
+} from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useToast } from 'vue-toastification';

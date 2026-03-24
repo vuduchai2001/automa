@@ -1,6 +1,8 @@
 import { fileSaver } from '@/utils/helper';
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
 import { IS_FIREFOX } from '@/common/utils/constant';
+import secrets from 'secrets';
+import WorkerApiClient from '@/utils/workerApiClient';
 import { waitTabLoaded } from '../helper';
 
 /**
@@ -95,17 +97,11 @@ async function saveTextFile({ filename, content }) {
  */
 async function sendScreenshotToBackend(data) {
   try {
-    // Get WebSocket config to determine backend URL
-    const { wsConfig } = await BrowserAPIService.storage.local.get('wsConfig');
-    if (!wsConfig || !wsConfig.url) {
+    if (!secrets.runtimeApiUrl) {
       return;
     }
 
-    // Extract base URL from WebSocket URL
-    const baseUrl = wsConfig.url
-      .replace('ws://', 'http://')
-      .replace('wss://', 'https://');
-    const apiUrl = `${baseUrl}/api/screenshot-step`;
+    const apiUrl = `${secrets.runtimeApiUrl}/api/screenshot-step`;
 
     const response = await fetch(apiUrl, {
       method: 'POST',
@@ -123,12 +119,32 @@ async function sendScreenshotToBackend(data) {
   }
 }
 
+/**
+ * Send artifact to worker's internal API (only in worker-triggered mode)
+ * @param {Object} workerContext - Worker execution context
+ * @param {Object} artifactData - { artifactType, artifactName, dataBase64, mimeType, metadata }
+ */
+async function sendArtifactToWorker(workerContext, artifactData) {
+  if (!workerContext) return;
+
+  try {
+    await WorkerApiClient.sendArtifactLog(workerContext, artifactData);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[ArtifactLog] Failed to send artifact to worker:',
+      error.message
+    );
+  }
+}
+
 async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
   const saveToComputer =
     typeof data.saveToComputer === 'undefined' || data.saveToComputer;
 
   // Get screenshot types - support both new array format and legacy single type
   const worker = this;
+  const workerContext = worker.engine?.options?.workerContext || null;
 
   let screenshotTypes = [];
   if (Array.isArray(data.types) && data.types.length > 0) {
@@ -372,6 +388,23 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
       // HTML data is now handled separately in HTML-only capture
 
       await sendScreenshotToBackend(backendData);
+
+      // Send artifact to worker internal API (worker-triggered mode only)
+      if (workerContext) {
+        const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, '');
+        await sendArtifactToWorker(workerContext, {
+          artifactType: 'screenshot',
+          artifactName: `${id}-${type}.${data.ext || 'png'}`,
+          dataBase64: base64Data,
+          mimeType: `image/${data.ext || 'png'}`,
+          metadata: {
+            workflow_step_id: id,
+            block_label: label,
+            screenshot_type: type,
+            tab_url: worker.activeTab?.url || 'unknown',
+          },
+        });
+      }
     }
 
     // Send HTML-only data to backend if no screenshots
@@ -395,6 +428,25 @@ async function takeScreenshotAndLog({ data, id, label, prevBlock }) {
       };
 
       await sendScreenshotToBackend(backendData);
+
+      // Send HTML artifact to worker internal API (worker-triggered mode only)
+      if (workerContext) {
+        const htmlBase64 = btoa(
+          unescape(encodeURIComponent(htmlData.htmlContent))
+        );
+        await sendArtifactToWorker(workerContext, {
+          artifactType: 'html_capture',
+          artifactName: `${id}-html.html`,
+          dataBase64: htmlBase64,
+          mimeType: 'text/html',
+          metadata: {
+            workflow_step_id: id,
+            block_label: label,
+            tab_url: worker.activeTab?.url || 'unknown',
+            has_element_html: !!htmlData.elementHTML,
+          },
+        });
+      }
     }
 
     // Return the first screenshot as main data (for backward compatibility)

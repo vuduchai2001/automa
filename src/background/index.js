@@ -290,7 +290,11 @@ message.on('websocket:disable', async () => {
   return { success: true };
 });
 
-message.on('websocket:get-status', () => {
+message.on('websocket:get-status', async () => {
+  // If not connected, try to reconnect (handles F5 / page reload)
+  if (!BackgroundWebSocket.instance.isConnected) {
+    BackgroundWebSocket.instance.init();
+  }
   return {
     connected: BackgroundWebSocket.instance.isConnected,
     reconnectAttempts: BackgroundWebSocket.instance.reconnectAttempts,

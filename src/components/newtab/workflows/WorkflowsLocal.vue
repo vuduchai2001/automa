@@ -147,6 +147,29 @@
       </ui-list-item>
     </ui-list>
   </ui-modal>
+  <ui-modal
+    v-model="moveToFolderState.show"
+    :title="`Move &quot;${moveToFolderState.workflowName}&quot; to folder`"
+  >
+    <ui-list class="space-y-1" style="max-height: 400px; overflow-y: auto">
+      <ui-list-item
+        class="cursor-pointer"
+        @click="moveToFolder('')"
+      >
+        <v-remixicon name="riFolderLine" class="mr-2 -ml-1" />
+        <span>No folder</span>
+      </ui-list-item>
+      <ui-list-item
+        v-for="folder in folderStore.items"
+        :key="folder.id"
+        class="cursor-pointer"
+        @click="moveToFolder(folder.id)"
+      >
+        <v-remixicon name="riFolderLine" class="mr-2 -ml-1" />
+        <span>{{ folder.name }}</span>
+      </ui-list-item>
+    </ui-list>
+  </ui-modal>
 </template>
 <script setup>
 import {
@@ -163,6 +186,7 @@ import cloneDeep from 'lodash.clonedeep';
 import dayjs from '@/lib/dayjs';
 import { arraySorter } from '@/utils/helper';
 import { useUserStore } from '@/stores/user';
+import { useFolderStore } from '@/stores/folder';
 import { useDialog } from '@/composable/dialog';
 import { useWorkflowStore } from '@/stores/workflow';
 import { exportWorkflow } from '@/utils/workflowData';
@@ -203,6 +227,7 @@ const emit = defineEmits(['update:perPage']);
 const { t } = useI18n();
 const dialog = useDialog();
 const userStore = useUserStore();
+const folderStore = useFolderStore();
 const workflowStore = useWorkflowStore();
 const sharedWorkflowStore = useSharedWorkflowStore();
 
@@ -223,6 +248,11 @@ const versionState = shallowReactive({
   versions: [],
   loading: false,
   rollbackLoading: false,
+});
+const moveToFolderState = shallowReactive({
+  show: false,
+  workflowId: '',
+  workflowName: '',
 });
 const pagination = shallowReactive({
   currentPage: 1,
@@ -524,6 +554,19 @@ function handleDeprecate(workflow) {
   });
 }
 
+function openMoveToFolder(workflow) {
+  moveToFolderState.workflowId = workflow.id;
+  moveToFolderState.workflowName = workflow.name;
+  moveToFolderState.show = true;
+}
+function moveToFolder(folderId) {
+  workflowStore.update({
+    id: moveToFolderState.workflowId,
+    data: { folderId },
+  });
+  moveToFolderState.show = false;
+}
+
 const menu = [
   {
     id: 'copy-id',
@@ -579,6 +622,12 @@ const menu = [
     name: 'Versions',
     icon: 'riHistoryLine',
     action: openVersions,
+  },
+  {
+    id: 'move-to-folder',
+    name: 'Move to folder',
+    icon: 'riFolderOpenLine',
+    action: openMoveToFolder,
   },
   {
     id: 'delete',
