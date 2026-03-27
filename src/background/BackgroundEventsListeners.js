@@ -3,8 +3,11 @@ import { initElementSelector } from '@/newtab/utils/elementSelector';
 import dayjs from 'dayjs';
 import dbStorage from '@/db/storage';
 import cronParser from 'cron-parser';
+import BackgroundWebSocket from './BackgroundWebSocket';
 import BackgroundUtils from './BackgroundUtils';
 import BackgroundWorkflowTriggers from './BackgroundWorkflowTriggers';
+
+const IS_HEADLESS_BUILD = process.env.EXTENSION_BUILD_MODE === 'headless';
 
 async function handleScheduleBackup() {
   try {
@@ -76,7 +79,12 @@ async function handleScheduleBackup() {
 }
 
 class BackgroundEventsListeners {
+  static isAutomaInitUrl(url = '') {
+    return /\/automa-init(?:\?|$)/.test(url);
+  }
+
   static onActionClicked() {
+    if (IS_HEADLESS_BUILD) return;
     BackgroundUtils.openDashboard();
   }
 
@@ -100,6 +108,11 @@ class BackgroundEventsListeners {
   static onWebNavigationCompleted({ tabId, url, frameId }) {
     if (frameId > 0) return;
 
+    if (BackgroundEventsListeners.isAutomaInitUrl(url)) {
+      BackgroundWebSocket.instance.reconnectAttempts = 0;
+      BackgroundWebSocket.instance.init();
+    }
+
     BackgroundWorkflowTriggers.visitWebTriggers(tabId, url);
   }
 
@@ -108,6 +121,8 @@ class BackgroundEventsListeners {
   }
 
   static async onNotificationClicked(notificationId) {
+    if (IS_HEADLESS_BUILD) return;
+
     if (notificationId.startsWith('logs')) {
       const { 1: logId } = notificationId.split(':');
 
@@ -129,6 +144,11 @@ class BackgroundEventsListeners {
   static onHistoryStateUpdated({ frameId, url, tabId }) {
     if (frameId !== 0) return;
 
+    if (BackgroundEventsListeners.isAutomaInitUrl(url)) {
+      BackgroundWebSocket.instance.reconnectAttempts = 0;
+      BackgroundWebSocket.instance.init();
+    }
+
     BackgroundWorkflowTriggers.visitWebTriggers(tabId, url, true);
   }
 
@@ -144,11 +164,13 @@ class BackgroundEventsListeners {
           isFirstTime: true,
           visitWebTriggers: [],
         });
-        await browser.windows.create({
-          type: 'popup',
-          state: 'maximized',
-          url: browser.runtime.getURL('newtab.html#/welcome'),
-        });
+        if (!IS_HEADLESS_BUILD) {
+          await browser.windows.create({
+            type: 'popup',
+            state: 'maximized',
+            url: browser.runtime.getURL('newtab.html#/welcome'),
+          });
+        }
 
         return;
       }

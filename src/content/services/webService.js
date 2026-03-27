@@ -240,7 +240,7 @@ window.addEventListener('app-mounted', async () => {
     if (webStorageAuthData && !extensionStorage.session) {
       await setUserSession();
     } else if (webStorageAuthData && extensionStorage.session) {
-      if (webStorageAuthData.user.id !== extensionStorage.session.id) {
+      if (webStorageAuthData.user.id !== extensionStorage.session.user?.id) {
         await setUserSession();
       } else {
         const currentSession = { ...extensionStorage.session };

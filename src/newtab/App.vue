@@ -91,6 +91,7 @@ import { useWorkflowStore } from '@/stores/workflow';
 import { getUserWorkflows } from '@/utils/nativeApi';
 import dataMigration from '@/utils/dataMigration';
 import { MessageListener } from '@/utils/message';
+import { isWorkerModePayload } from '@/utils/workerMode';
 import { getWorkflowPermissions } from '@/utils/workflowData';
 import automa from '@business';
 import { useHead } from '@vueuse/head';
@@ -320,11 +321,35 @@ watch(
   }
 );
 
-// Bridge profileId from localStorage to browser.storage.local
-// (worker injects profileId into page localStorage before loading extension)
-const profileId = localStorage.getItem('profileId');
-if (profileId) {
-  browser.storage.local.set({ profileId });
+// Bridge worker bootstrap config from page localStorage to browser.storage.local
+// so background can connect without going through the interactive login flow.
+const workerBootstrapConfig = {
+  profileId: localStorage.getItem('profileId'),
+  internalApiPort: localStorage.getItem('internalApiPort'),
+  internalApiSecret: localStorage.getItem('internalApiSecret'),
+  wsUrl: localStorage.getItem('wsUrl'),
+};
+
+const workerBootstrapPayload = Object.entries(workerBootstrapConfig).reduce(
+  (acc, [key, value]) => {
+    if (value) acc[key] = value;
+    return acc;
+  },
+  {}
+);
+
+if (workerBootstrapPayload.wsUrl) {
+  workerBootstrapPayload.wsConfig = {
+    enabled: true,
+    url: workerBootstrapPayload.wsUrl,
+  };
+}
+
+if (isWorkerModePayload(workerBootstrapPayload)) {
+  workerBootstrapPayload.workerMode = true;
+  browser.storage.local.set(workerBootstrapPayload);
+} else if (workerBootstrapPayload.profileId) {
+  browser.storage.local.set({ profileId: workerBootstrapPayload.profileId });
 }
 
 (async () => {

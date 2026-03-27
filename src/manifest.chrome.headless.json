@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "Automa Headless",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_icon": "icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.bundle.js",
+    "type": "module"
+  },
+  "icons": {
+    "128": "icon-128.png"
+  },
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["contentScript.bundle.js"],
+      "run_at": "document_start",
+      "match_about_blank": true,
+      "all_frames": true
+    }
+  ],
+  "optional_permissions": [
+    "cookies",
+    "downloads",
+    "contextMenus",
+    "clipboardRead",
+    "notifications"
+  ],
+  "permissions": [
+    "tabs",
+    "proxy",
+    "alarms",
+    "storage",
+    "debugger",
+    "activeTab",
+    "offscreen",
+    "webNavigation",
+    "unlimitedStorage",
+    "scripting"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "/locales/*",
+        "/icon-128.png",
+        "/Inter-roman-latin.var.woff2"
+      ],
+      "matches": ["*://*/*"]
+    }
+  ],
+  "sandbox": {
+    "pages": ["/sandbox.html"]
+  }
+}

@@ -9,6 +9,7 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const TerserPlugin = require('terser-webpack-plugin');
 const env = require('./utils/env');
+const IS_HEADLESS_BUILD = env.BUILD_MODE === 'headless';
 
 const ASSET_PATH = process.env.ASSET_PATH || '/';
 
@@ -38,40 +39,93 @@ if (fileSystem.existsSync(secretsPath)) {
   alias.secrets = secretsPath;
 }
 
+const entry = {
+  sandbox: path.join(__dirname, 'src', 'sandbox', 'index.js'),
+  execute: path.join(__dirname, 'src', 'execute', 'index.js'),
+  newtab: path.join(__dirname, 'src', 'newtab', 'index.js'),
+  popup: path.join(__dirname, 'src', 'popup', 'index.js'),
+  params: path.join(__dirname, 'src', 'params', 'index.js'),
+  background: path.join(__dirname, 'src', 'background', 'index.js'),
+  contentScript: path.join(__dirname, 'src', 'content', 'index.js'),
+  offscreen: path.join(__dirname, 'src', 'offscreen', 'index.js'),
+  recordWorkflow: path.join(
+    __dirname,
+    'src',
+    'content',
+    'services',
+    'recordWorkflow',
+    'index.js'
+  ),
+  webService: path.join(
+    __dirname,
+    'src',
+    'content',
+    'services',
+    'webService.js'
+  ),
+  elementSelector: path.join(
+    __dirname,
+    'src',
+    'content',
+    'elementSelector',
+    'index.js'
+  ),
+};
+
+const htmlPlugins = [
+  new HtmlWebpackPlugin({
+    template: path.join(__dirname, 'src', 'newtab', 'index.html'),
+    filename: 'newtab.html',
+    chunks: ['newtab'],
+    cache: false,
+  }),
+  new HtmlWebpackPlugin({
+    template: path.join(__dirname, 'src', 'sandbox', 'index.html'),
+    filename: 'sandbox.html',
+    chunks: ['sandbox'],
+    cache: false,
+  }),
+  new HtmlWebpackPlugin({
+    template: path.join(__dirname, 'src', 'execute', 'index.html'),
+    filename: 'execute.html',
+    chunks: ['execute'],
+    cache: false,
+  }),
+  new HtmlWebpackPlugin({
+    template: path.join(__dirname, 'src', 'popup', 'index.html'),
+    filename: 'popup.html',
+    chunks: ['popup'],
+    cache: false,
+  }),
+  new HtmlWebpackPlugin({
+    template: path.join(__dirname, 'src', 'params', 'index.html'),
+    filename: 'params.html',
+    chunks: ['params'],
+    cache: false,
+  }),
+  new HtmlWebpackPlugin({
+    template: path.join(__dirname, 'src', 'offscreen', 'index.html'),
+    filename: 'offscreen.html',
+    chunks: ['offscreen'],
+    cache: false,
+  }),
+];
+
+const headlessEntryKeys = [
+  'background',
+  'contentScript',
+  'offscreen',
+  'sandbox',
+];
+const filteredEntry = IS_HEADLESS_BUILD
+  ? Object.fromEntries(
+      Object.entries(entry).filter(([key]) => headlessEntryKeys.includes(key))
+    )
+  : entry;
+
 const options = {
   mode: process.env.NODE_ENV || 'development',
-  entry: {
-    sandbox: path.join(__dirname, 'src', 'sandbox', 'index.js'),
-    execute: path.join(__dirname, 'src', 'execute', 'index.js'),
-    newtab: path.join(__dirname, 'src', 'newtab', 'index.js'),
-    popup: path.join(__dirname, 'src', 'popup', 'index.js'),
-    params: path.join(__dirname, 'src', 'params', 'index.js'),
-    background: path.join(__dirname, 'src', 'background', 'index.js'),
-    contentScript: path.join(__dirname, 'src', 'content', 'index.js'),
-    offscreen: path.join(__dirname, 'src', 'offscreen', 'index.js'),
-    recordWorkflow: path.join(
-      __dirname,
-      'src',
-      'content',
-      'services',
-      'recordWorkflow',
-      'index.js'
-    ),
-    webService: path.join(
-      __dirname,
-      'src',
-      'content',
-      'services',
-      'webService.js'
-    ),
-    elementSelector: path.join(
-      __dirname,
-      'src',
-      'content',
-      'elementSelector',
-      'index.js'
-    ),
-  },
+  entry: filteredEntry,
   chromeExtensionBoilerplate: {
     notHotReload: [
       'background',
@@ -82,7 +136,10 @@ const options = {
     ],
   },
   output: {
-    path: path.resolve(__dirname, 'build'),
+    path: path.resolve(
+      __dirname,
+      IS_HEADLESS_BUILD ? 'build-headless' : 'build'
+    ),
     filename: '[name].bundle.js',
     publicPath: ASSET_PATH,
   },
@@ -155,6 +212,7 @@ const options = {
         process.env.RUNTIME_API_URL || ''
       ),
       'process.env.WS_URL': JSON.stringify(process.env.WS_URL || ''),
+      'process.env.EXTENSION_BUILD_MODE': JSON.stringify(env.BUILD_MODE),
     }),
     new webpack.ProgressPlugin(),
     // clean the build folder
@@ -167,10 +225,16 @@ const options = {
       patterns: [
         {
           from:
-            env.NODE_ENV === 'development' && env.BROWSER === 'chrome'
+            IS_HEADLESS_BUILD && env.BROWSER === 'chrome'
+              ? `src/manifest.${env.BROWSER}.headless.json`
+              : env.NODE_ENV === 'development' && env.BROWSER === 'chrome'
               ? `src/manifest.${env.BROWSER}.dev.json`
               : `src/manifest.${env.BROWSER}.json`,
-          to: path.join(__dirname, 'build', 'manifest.json'),
+          to: path.join(
+            __dirname,
+            IS_HEADLESS_BUILD ? 'build-headless' : 'build',
+            'manifest.json'
+          ),
           force: true,
           toType: 'file',
           transform(content) {
@@ -197,51 +261,28 @@ const options = {
         },
         {
           from: 'src/assets/images/icon-128.png',
-          to: path.join(__dirname, 'build'),
+          to: path.join(
+            __dirname,
+            IS_HEADLESS_BUILD ? 'build-headless' : 'build'
+          ),
           force: true,
         },
         {
           from: 'src/assets/images/icon-dev-128.png',
-          to: path.join(__dirname, 'build'),
+          to: path.join(
+            __dirname,
+            IS_HEADLESS_BUILD ? 'build-headless' : 'build'
+          ),
           force: true,
         },
       ],
     }),
-    new HtmlWebpackPlugin({
-      template: path.join(__dirname, 'src', 'newtab', 'index.html'),
-      filename: 'newtab.html',
-      chunks: ['newtab'],
-      cache: false,
-    }),
-    new HtmlWebpackPlugin({
-      template: path.join(__dirname, 'src', 'sandbox', 'index.html'),
-      filename: 'sandbox.html',
-      chunks: ['sandbox'],
-      cache: false,
-    }),
-    new HtmlWebpackPlugin({
-      template: path.join(__dirname, 'src', 'execute', 'index.html'),
-      filename: 'execute.html',
-      chunks: ['execute'],
-      cache: false,
-    }),
-    new HtmlWebpackPlugin({
-      template: path.join(__dirname, 'src', 'popup', 'index.html'),
-      filename: 'popup.html',
-      chunks: ['popup'],
-      cache: false,
-    }),
-    new HtmlWebpackPlugin({
-      template: path.join(__dirname, 'src', 'params', 'index.html'),
-      filename: 'params.html',
-      chunks: ['params'],
-      cache: false,
-    }),
-    new HtmlWebpackPlugin({
-      template: path.join(__dirname, 'src', 'offscreen', 'index.html'),
-      filename: 'offscreen.html',
-      chunks: ['offscreen'],
-      cache: false,
+    ...htmlPlugins.filter((plugin) => {
+      if (!IS_HEADLESS_BUILD) return true;
+
+      return ['sandbox.html', 'offscreen.html'].includes(
+        plugin.userOptions.filename
+      );
     }),
     new webpack.DefinePlugin({
       __VUE_OPTIONS_API__: true,

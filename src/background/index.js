@@ -2,6 +2,7 @@ import { IS_FIREFOX } from '@/common/utils/constant';
 import BrowserAPIEventHandler from '@/service/browser-api/BrowserAPIEventHandler';
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
 import { useUserStore } from '@/stores/user';
+import { authTrace, summarizeSession } from '@/utils/authTrace';
 import getFile, { readFileAsBase64 } from '@/utils/getFile';
 import { sleep } from '@/utils/helper';
 import { MessageListener } from '@/utils/message';
@@ -18,21 +19,54 @@ import BackgroundUtils from './BackgroundUtils';
 import BackgroundWorkflowUtils from './BackgroundWorkflowUtils';
 import BackgroundWebSocket from './BackgroundWebSocket';
 
+const IS_HEADLESS_BUILD = process.env.EXTENSION_BUILD_MODE === 'headless';
+
 BackgroundOffscreen.instance.sendMessage('halo');
 
 // ═══════════════════════════════════════════════════
-// WEBSOCKET SERVICE (connects only after login)
+// WEBSOCKET SERVICE (supports login-backed and worker-driven bootstrap)
 // ═══════════════════════════════════════════════════
-// Try to connect if already authenticated
+// Try to connect from stored bootstrap/config on startup
 BackgroundWebSocket.instance.init();
 
 // Connect/disconnect only on actual login/logout transitions
 // (ignore token refreshes which also update session)
 browser.storage.local.onChanged.addListener((changes) => {
+  if (changes.profileId?.newValue) {
+    BackgroundWebSocket.instance.profileId = changes.profileId.newValue;
+
+    if (BackgroundWebSocket.instance.isConnected) {
+      BackgroundWebSocket.instance
+        .onOpen()
+        .catch((e) => console.error('[WebSocket] Re-identify error:', e));
+    }
+  }
+
+  if (
+    changes.wsConfig ||
+    changes.internalApiPort ||
+    changes.internalApiSecret ||
+    changes.workerMode
+  ) {
+    if (changes.wsConfig && !changes.wsConfig.newValue?.enabled) {
+      BackgroundWebSocket.instance.disconnect();
+      return;
+    }
+
+    BackgroundWebSocket.instance.reconnectAttempts = 0;
+    BackgroundWebSocket.instance.init();
+  }
+
   if (!changes.session) return;
 
   const hadToken = !!changes.session.oldValue?.access_token;
   const hasToken = !!changes.session.newValue?.access_token;
+  authTrace('storage:session-changed', {
+    hadToken,
+    hasToken,
+    oldSession: summarizeSession(changes.session.oldValue),
+    newSession: summarizeSession(changes.session.newValue),
+  });
 
   if (!hadToken && hasToken) {
     // Login transition: no token → has token
@@ -40,19 +74,11 @@ browser.storage.local.onChanged.addListener((changes) => {
     BackgroundWebSocket.instance.init();
   } else if (hadToken && !hasToken) {
     // Logout transition: had token → no token
-    BackgroundWebSocket.instance.disconnect();
-  }
-  // Token refresh (hadToken && hasToken) → ignore, don't reconnect
-
-  // profileId bridged from page localStorage → update WS and re-identify
-  if (changes.profileId && changes.profileId.newValue) {
-    BackgroundWebSocket.instance.profileId = changes.profileId.newValue;
-    if (BackgroundWebSocket.instance.isConnected) {
-      BackgroundWebSocket.instance.onOpen().catch((e) =>
-        console.error('[WebSocket] Re-identify error:', e)
-      );
+    if (!BackgroundWebSocket.instance.workerMode) {
+      BackgroundWebSocket.instance.disconnect();
     }
   }
+  // Token refresh (hadToken && hasToken) → ignore, don't reconnect
 });
 
 // ═══════════════════════════════════════════════════
@@ -73,11 +99,15 @@ browser.storage.local.onChanged.addListener((changes) => {
 
 browser.alarms.onAlarm.addListener(BackgroundEventsListeners.onAlarms);
 
-browser.commands.onCommand.addListener(BackgroundEventsListeners.onCommand);
+if (browser.commands?.onCommand) {
+  browser.commands.onCommand.addListener(BackgroundEventsListeners.onCommand);
+}
 
-(browser.action || browser.browserAction).onClicked.addListener(
-  BackgroundEventsListeners.onActionClicked
-);
+if (!IS_HEADLESS_BUILD) {
+  (browser.action || browser.browserAction).onClicked.addListener(
+    BackgroundEventsListeners.onActionClicked
+  );
+}
 
 browser.runtime.onStartup.addListener(
   BackgroundEventsListeners.onRuntimeStartup
@@ -202,7 +232,7 @@ message.on('workflow:execute', async (workflowData, sender) => {
     workflowData.options.tabId = sender.tab.id;
   }
 
-  BackgroundWorkflowUtils.instance.executeWorkflow(
+  await BackgroundWorkflowUtils.instance.executeWorkflow(
     workflowData,
     workflowData?.options || {}
   );

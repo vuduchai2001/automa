@@ -342,11 +342,7 @@
         class="mb-4 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
       >
         <option value="" disabled>Select platform</option>
-        <option
-          v-for="p in platforms"
-          :key="p.code"
-          :value="p.code"
-        >
+        <option v-for="p in platforms" :key="p.code" :value="p.code">
           {{ p.name }}
         </option>
       </select>
@@ -406,13 +402,7 @@ import { fetchApi } from '@/utils/api';
 import { findTriggerBlock, isWhitespace } from '@/utils/helper';
 import { getWorkflowPermissions, importWorkflow } from '@/utils/workflowData';
 import { registerWorkflowTrigger } from '@/utils/workflowTrigger';
-import {
-  computed,
-  onMounted,
-  ref,
-  shallowReactive,
-  watch,
-} from 'vue';
+import { computed, onMounted, ref, shallowReactive, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useToast } from 'vue-toastification';
@@ -669,10 +659,18 @@ onMounted(async () => {
 
   // Fetch platforms for workflow creation
   try {
-    const response = await fetchApi('/api/v1/control/platforms', { auth: true });
+    const response = await fetchApi(
+      '/api/v1/control/platforms?skip=0&limit=100',
+      {
+        auth: true,
+      }
+    );
     if (response.ok) {
       const result = await response.json();
       platforms.value = result.data || result;
+    } else {
+      const result = await response.json().catch(() => null);
+      console.error('[Workflows] Failed to fetch platforms:', result);
     }
   } catch (e) {
     console.error('[Workflows] Failed to fetch platforms:', e);

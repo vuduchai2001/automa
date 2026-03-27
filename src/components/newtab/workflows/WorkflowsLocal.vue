@@ -138,10 +138,7 @@
             {{ formatVersionDate(version.created_at) }}
           </p>
         </div>
-        <ui-button
-          class="ml-4 shrink-0"
-          @click="handleRollback(version)"
-        >
+        <ui-button class="ml-4 shrink-0" @click="handleRollback(version)">
           Use this version
         </ui-button>
       </ui-list-item>
@@ -152,10 +149,7 @@
     :title="`Move &quot;${moveToFolderState.workflowName}&quot; to folder`"
   >
     <ui-list class="space-y-1" style="max-height: 400px; overflow-y: auto">
-      <ui-list-item
-        class="cursor-pointer"
-        @click="moveToFolder('')"
-      >
+      <ui-list-item class="cursor-pointer" @click="moveToFolder('')">
         <v-remixicon name="riFolderLine" class="mr-2 -ml-1" />
         <span>No folder</span>
       </ui-list-item>

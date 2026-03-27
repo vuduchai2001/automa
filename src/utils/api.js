@@ -1,11 +1,15 @@
 import BrowserAPIService from '@/service/browser-api/BrowserAPIService';
 import secrets from 'secrets';
+import { getAccessToken, refreshToken } from './auth';
+import { authTrace, summarizeSession } from './authTrace';
 import { isObject, parseJSON } from './helper';
 
 export async function fetchApi(path, options = {}) {
   const urlPath = path.startsWith('/') ? path : `/${path}`;
   const baseUrl = options.baseUrl || secrets.controlApiUrl;
   delete options.baseUrl;
+  const retryAuth = options.retryAuth !== false;
+  delete options.retryAuth;
 
   // Always clean up auth flag so it doesn't leak into fetch()
   const needsAuth = !!options.auth;
@@ -16,42 +20,22 @@ export async function fetchApi(path, options = {}) {
     ...(options?.headers || {}),
   };
 
-  const { session } = (await BrowserAPIService.storage.local.get(
-    'session'
-  )) || { session: null };
-  if (session && needsAuth) {
-    let token = session.access_token;
+  let token = null;
+  if (needsAuth) {
+    token = await getAccessToken(BrowserAPIService.storage.local);
 
-    if (Date.now() > (session.expires_at - 2000) * 1000) {
-      const response = await fetch(
-        `${secrets.iamApiUrl}/api/v1/iam/auth/rotate`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: session.refresh_token }),
-        }
-      );
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result.message);
-      }
-
-      const expiresAt =
-        result.expires_at ||
-        Math.floor(Date.now() / 1000) + (result.expires_in || 3600);
-      const newSession = {
-        access_token: result.access_token,
-        refresh_token: result.refresh_token,
-        expires_at: expiresAt,
-        session_id: result.session_id || session.session_id,
-        user: session.user,
-      };
-      await BrowserAPIService.storage.local.set({ session: newSession });
-      token = newSession.access_token;
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
-
-    headers.Authorization = `Bearer ${token}`;
   }
+
+  authTrace('fetch:start', {
+    path: urlPath,
+    baseUrl,
+    needsAuth,
+    hasAuthorization: !!headers.Authorization,
+    retryAuth,
+  });
 
   const url = `${baseUrl}${urlPath}`;
 
@@ -60,9 +44,66 @@ export async function fetchApi(path, options = {}) {
     headers,
   });
 
-  // Handle 401: token refresh already failed — clear session to force re-login
+  authTrace('fetch:response', {
+    path: urlPath,
+    status: response.status,
+    needsAuth,
+    hasAuthorization: !!headers.Authorization,
+    retryAuth,
+  });
+
   if (response.status === 401 && headers.Authorization) {
-    await BrowserAPIService.storage.local.remove('session');
+    authTrace('fetch:401', {
+      path: urlPath,
+      retryAuth,
+    });
+
+    if (retryAuth) {
+      try {
+        const refreshedSession = await refreshToken(
+          BrowserAPIService.storage.local
+        );
+        const refreshedToken = refreshedSession?.access_token;
+        authTrace('fetch:retry-after-refresh', {
+          path: urlPath,
+          tokenChanged: !!refreshedToken && refreshedToken !== token,
+          refreshedSession: summarizeSession(refreshedSession),
+        });
+
+        if (refreshedToken && refreshedToken !== token) {
+          return fetchApi(path, {
+            ...options,
+            baseUrl,
+            auth: needsAuth,
+            retryAuth: false,
+            headers: {
+              ...headers,
+              Authorization: `Bearer ${refreshedToken}`,
+            },
+          });
+        }
+      } catch (error) {
+        authTrace('fetch:retry-failed', {
+          path: urlPath,
+          error: error.message,
+          status: error.status || null,
+        });
+      }
+    }
+
+    const { session } = await BrowserAPIService.storage.local.get('session');
+    if (!session || session.access_token === token) {
+      authTrace('fetch:clear-session', {
+        path: urlPath,
+        session: summarizeSession(session),
+      });
+      await BrowserAPIService.storage.local.remove(['session', 'user']);
+    } else {
+      authTrace('fetch:keep-newer-session', {
+        path: urlPath,
+        session: summarizeSession(session),
+      });
+    }
   }
 
   return response;

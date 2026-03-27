@@ -231,6 +231,54 @@ class WorkflowWorker {
     this.breakpointState = null;
   }
 
+  createBlockLogDetail(
+    block,
+    replacedBlock,
+    prevBlockData,
+    startExecuteTime,
+    status,
+    extra = {}
+  ) {
+    let { description } = block.data;
+
+    if (block.label === 'loop-breakpoint') description = block.data.loopId;
+    else if (block.label === 'block-package') description = block.data.name;
+
+    return {
+      description,
+      prevBlockData,
+      type: status,
+      name: block.label,
+      blockId: block.id,
+      workerId: this.id,
+      timestamp: startExecuteTime,
+      activeTabUrl: this.activeTab?.url,
+      replacedValue: replacedBlock?.replacedValue,
+      duration: Math.round(Date.now() - startExecuteTime),
+      ...extra,
+    };
+  }
+
+  logBlockResult(
+    block,
+    replacedBlock,
+    prevBlockData,
+    startExecuteTime,
+    status,
+    extra = {}
+  ) {
+    this.engine.addLogHistory(
+      this.createBlockLogDetail(
+        block,
+        replacedBlock,
+        prevBlockData,
+        startExecuteTime,
+        status,
+        extra
+      )
+    );
+  }
+
   async executeBlock(block, execParam = {}, isRetry = false) {
     const currentState = await this.engine.states.get(this.engine.id);
 
@@ -303,26 +351,6 @@ class WorkflowWorker {
     });
 
     const blockDelay = this.settings?.blockDelay || 0;
-    const addBlockLog = (status, obj = {}) => {
-      let { description } = block.data;
-
-      if (block.label === 'loop-breakpoint') description = block.data.loopId;
-      else if (block.label === 'block-package') description = block.data.name;
-
-      this.engine.addLogHistory({
-        description,
-        prevBlockData,
-        type: status,
-        name: block.label,
-        blockId: block.id,
-        workerId: this.id,
-        timestamp: startExecuteTime,
-        activeTabUrl: this.activeTab?.url,
-        replacedValue: replacedBlock.replacedValue,
-        duration: Math.round(Date.now() - startExecuteTime),
-        ...obj,
-      });
-    };
 
     const executeBlocks = (blocks, data) => {
       return this.executeNextBlocks(
@@ -354,13 +382,24 @@ class WorkflowWorker {
           replacedBlock.replacedValue = result.replacedValue;
         }
 
-        addBlockLog(result.status || 'success', {
-          logId: result.logId,
-          ctxData: result?.ctxData,
-        });
+        this.logBlockResult(
+          block,
+          replacedBlock,
+          prevBlockData,
+          startExecuteTime,
+          result.status || 'success',
+          {
+            logId: result.logId,
+            ctxData: result?.ctxData,
+          }
+        );
       }
 
-      if (result.nextBlockId && !result.destroyWorker) {
+      const hasNextBlocks = Array.isArray(result.nextBlockId)
+        ? result.nextBlockId.length > 0
+        : Boolean(result.nextBlockId);
+
+      if (hasNextBlocks && !result.destroyWorker) {
         if (blockDelay > 0) {
           setTimeout(() => {
             executeBlocks(result.nextBlockId, result.data);
@@ -369,23 +408,23 @@ class WorkflowWorker {
           executeBlocks(result.nextBlockId, result.data);
         }
       } else {
-        // Workflow completed successfully - take final screenshot
-        // await ScreenshotManager.takeScreenshotOnSuccess(
-        //   block,
-        //   this.activeTab,
-        //   this.engine.id
-        // );
-        this.engine.destroyWorker(this.id);
+        // Final screenshots are best-effort and must not block workflow teardown.
+        ScreenshotManager.takeScreenshotOnSuccess(
+          block,
+          this.activeTab,
+          this.engine.id
+        );
+        await this.engine.destroyWorker(this.id);
       }
     } catch (error) {
       console.error(error);
       // Take screenshot on error
-      // await ScreenshotManager.takeScreenshotOnError(
-      //   error,
-      //   block,
-      //   this.activeTab,
-      //   this.engine.id
-      // );
+      ScreenshotManager.takeScreenshotOnError(
+        error,
+        block,
+        this.activeTab,
+        this.engine.id
+      );
 
       const errorLogData = {
         message: error.message,
@@ -423,7 +462,14 @@ class WorkflowWorker {
           blockOnError.toDo === 'continue' ? 1 : 'fallback'
         );
         if (blockOnError.toDo !== 'error' && nextBlocks) {
-          addBlockLog('error', errorLogData);
+          this.logBlockResult(
+            block,
+            replacedBlock,
+            prevBlockData,
+            startExecuteTime,
+            'error',
+            errorLogData
+          );
 
           executeBlocks(nextBlocks, prevBlockData);
 
@@ -438,7 +484,14 @@ class WorkflowWorker {
       }
 
       const errorLogItem = errorLogData;
-      addBlockLog('error', errorLogItem);
+      this.logBlockResult(
+        block,
+        replacedBlock,
+        prevBlockData,
+        startExecuteTime,
+        'error',
+        errorLogItem
+      );
 
       errorLogItem.blockId = block.id;
 

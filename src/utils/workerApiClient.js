@@ -16,7 +16,7 @@ class WorkerApiClient {
    * @returns {string}
    */
   static baseUrl(port) {
-    return `http://10.6.0.2:${port}`;
+    return `http://localhost:${port}`;
   }
 
   /**

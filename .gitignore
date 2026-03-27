@@ -9,6 +9,7 @@
 # production
 /build
 /build-zip
+/build-headless
 
 # misc
 .DS_Store

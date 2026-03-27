@@ -4,6 +4,10 @@ const http = require('http');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const net = require('net');
+const { execFileSync, spawn } = require('child_process');
+const { chromium } = require('playwright');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -17,16 +21,66 @@ const wss = new WebSocket.Server({ server });
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Configuration
 const PORT = process.env.PORT || 8000;
 const AUTH_TOKEN = process.env.AUTH_TOKEN || 'test-token-12345';
+const INTERNAL_API_PORT = Number(process.env.INTERNAL_API_PORT || PORT);
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || '';
+const DEFAULT_PROFILE_ID =
+  process.env.DEFAULT_PROFILE_ID || 'profile-backend-test';
+const SERVER_HOST = process.env.SERVER_HOST || '127.0.0.1';
+const HEADLESS_EXTENSION_BUILD_DIR = path.resolve(
+  __dirname,
+  '..',
+  'build-headless'
+);
+const EXTENSION_BUILD_DIR = path.resolve(
+  __dirname,
+  process.env.EXTENSION_BUILD_DIR ||
+    (fs.existsSync(HEADLESS_EXTENSION_BUILD_DIR)
+      ? '../build-headless'
+      : '../build')
+);
+const EXTENSION_IS_HEADLESS =
+  path.basename(EXTENSION_BUILD_DIR) === 'build-headless';
+const PLAYWRIGHT_HEADLESS =
+  String(process.env.PLAYWRIGHT_HEADLESS || 'false').toLowerCase() === 'true';
+const PLAYWRIGHT_TIMEOUT_MS = Number(
+  process.env.PLAYWRIGHT_TIMEOUT_MS || 120000
+);
+const PLAYWRIGHT_CHANNEL = process.env.PLAYWRIGHT_CHANNEL || undefined;
+const PLAYWRIGHT_EXECUTABLE_PATH =
+  process.env.PLAYWRIGHT_EXECUTABLE_PATH ||
+  'C:\\Users\\SPYSOCIA\\Desktop\\orbita-browser-140\\orbita-browser-140\\chrome.exe';
+const PLAYWRIGHT_REMOTE_DEBUGGING_HOST =
+  process.env.PLAYWRIGHT_REMOTE_DEBUGGING_HOST || '127.0.0.1';
+const OPEN_EXTENSION_UI_ON_LAUNCH =
+  String(process.env.OPEN_EXTENSION_UI_ON_LAUNCH || 'false').toLowerCase() ===
+  'true';
+const browserSessions = new Map();
+
+function resolveBrowserExecutablePath() {
+  const candidates = [
+    PLAYWRIGHT_EXECUTABLE_PATH,
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Users\\SPYSOCIA\\Desktop\\orbita-browser-140\\orbita-browser-140\\chrome.exe',
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+const RESOLVED_BROWSER_EXECUTABLE_PATH = resolveBrowserExecutablePath();
 
 // Data store (in production, use a real database)
 const connectedExtensions = new Map();
 const executionHistory = new Map();
+const workerArtifacts = new Map();
+const workerLogs = new Map();
 
 // Ensure logs directory exists
 const logsDir = path.join(__dirname, 'logs');
@@ -38,6 +92,746 @@ if (!fs.existsSync(logsDir)) {
 const imagesDir = path.join(__dirname, 'images');
 if (!fs.existsSync(imagesDir)) {
   fs.mkdirSync(imagesDir, { recursive: true });
+}
+
+function getConnectionId(extensionInfo) {
+  return (
+    extensionInfo.profileId ||
+    extensionInfo.installationId ||
+    extensionInfo.extensionId
+  );
+}
+
+function resolveExtension(identifier) {
+  if (!identifier) return null;
+
+  return (
+    connectedExtensions.get(identifier) ||
+    Array.from(connectedExtensions.values()).find(
+      (extension) =>
+        extension.extensionId === identifier ||
+        extension.profileId === identifier ||
+        extension.installationId === identifier
+    ) ||
+    null
+  );
+}
+
+function listBrowserSessions() {
+  return Array.from(browserSessions.values()).map((session) => ({
+    profileId: session.profileId,
+    connectionId: session.connectionId || session.profileId,
+    extensionId: session.extensionId || null,
+    installationId: session.installationId || null,
+    createdAt: session.createdAt,
+    connectedAt: session.connectedAt || null,
+    initUrl: session.initUrl,
+    serviceWorkerUrl: session.serviceWorkerUrl || null,
+  }));
+}
+
+function upsertExecution(executionId, patch = {}) {
+  const currentExecution = executionHistory.get(executionId) || {
+    executionId,
+    actionLogs: [],
+    workflowLogs: [],
+    artifacts: [],
+  };
+  const nextExecution = {
+    ...currentExecution,
+    ...patch,
+    actionLogs: patch.actionLogs || currentExecution.actionLogs || [],
+    workflowLogs: patch.workflowLogs || currentExecution.workflowLogs || [],
+    artifacts: patch.artifacts || currentExecution.artifacts || [],
+  };
+
+  executionHistory.set(executionId, nextExecution);
+  return nextExecution;
+}
+
+function appendExecutionItem(executionId, key, item) {
+  const execution = executionHistory.get(executionId) || { executionId };
+  const list = [...(execution[key] || []), item];
+  executionHistory.set(executionId, { ...execution, [key]: list });
+  return list;
+}
+
+function sanitizePathSegment(value, fallback = 'unknown') {
+  return String(value || fallback)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, '_')
+    .slice(0, 120);
+}
+
+function getExecutionRecord(executionId) {
+  return executionHistory.get(executionId) || { executionId };
+}
+
+function getExecutionLogsDir(executionId, profileId) {
+  const execution = getExecutionRecord(executionId);
+  const safeProfileId = sanitizePathSegment(
+    profileId ||
+      execution.profileId ||
+      execution.connectionId ||
+      'unknown-profile'
+  );
+  const safeExecutionId = sanitizePathSegment(executionId, 'unknown-execution');
+  const targetDir = path.join(logsDir, safeProfileId, safeExecutionId);
+
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  return targetDir;
+}
+
+function writeJsonFile(targetDir, filename, data) {
+  const filepath = path.join(targetDir, filename);
+  fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
+  return filepath;
+}
+
+function getDateParts(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+
+  return {
+    date: safeDate,
+    dateStr: safeDate.toISOString().split('T')[0],
+    timeStr: safeDate.toTimeString().split(' ')[0].replace(/:/g, '-'),
+  };
+}
+
+function writeExecutionJsonFile({
+  executionId,
+  profileId,
+  prefix,
+  timestamp = Date.now(),
+  data,
+}) {
+  const { dateStr, timeStr } = getDateParts(timestamp);
+  const targetDir = getExecutionLogsDir(executionId, profileId);
+  const filename = `${prefix}-${dateStr}-${timeStr}.json`;
+
+  return writeJsonFile(targetDir, filename, data);
+}
+
+function persistWorkflowLogFile(
+  executionId,
+  workflowLog,
+  profileId,
+  timestamp
+) {
+  return writeExecutionJsonFile({
+    executionId,
+    profileId,
+    prefix: 'workflow-log',
+    timestamp,
+    data: {
+      executionId,
+      workflowLog,
+    },
+  });
+}
+
+function persistFinishJobFile(executionId, profileId, timestamp = Date.now()) {
+  return writeExecutionJsonFile({
+    executionId,
+    profileId,
+    prefix: 'finish-job',
+    timestamp,
+    data: {
+      executionId,
+      finishJobCalledAt: new Date(timestamp).toISOString(),
+    },
+  });
+}
+
+function finalizeRunningExecutionsForConnection(connectionId, reason = '') {
+  const executions = Array.from(executionHistory.values()).filter(
+    (execution) =>
+      execution.status === 'running' &&
+      (execution.connectionId === connectionId ||
+        execution.profileId === connectionId)
+  );
+
+  executions.forEach((execution) => {
+    const finishedAt = Date.now();
+    const workflowLog = {
+      actionIndex: 0,
+      logLevel: 'error',
+      logType: 'workflow',
+      message: reason || 'Workflow disconnected before final callback',
+      logData: {
+        workflowId: execution.workflowId || execution.workflow?.id || null,
+        workflowName:
+          execution.workflowName || execution.workflow?.name || null,
+        status: 'disconnected',
+        startedAt: execution.startedAtFormatted || null,
+        endedAt: new Date(finishedAt).toISOString(),
+      },
+      receivedAt: new Date(finishedAt).toISOString(),
+      synthetic: true,
+    };
+
+    appendExecutionItem(execution.executionId, 'workflowLogs', workflowLog);
+    const workflowLogFile = persistWorkflowLogFile(
+      execution.executionId,
+      workflowLog,
+      execution.profileId,
+      finishedAt
+    );
+    const finishJobFile = persistFinishJobFile(
+      execution.executionId,
+      execution.profileId,
+      finishedAt
+    );
+
+    upsertExecution(execution.executionId, {
+      status: 'disconnected',
+      message: workflowLog.message,
+      completedAt: finishedAt,
+      completedAtFormatted: new Date(finishedAt).toISOString(),
+      workflowLogFile,
+      finishJobCalledAt: finishedAt,
+      finishJobCalledAtFormatted: new Date(finishedAt).toISOString(),
+      finishJobFile,
+    });
+  });
+}
+
+function saveBase64Artifact({
+  executionId,
+  artifactType,
+  artifactName,
+  dataBase64,
+  mimeType,
+  capturedAt,
+  metadata,
+}) {
+  const { dateStr, timeStr } = getDateParts(capturedAt);
+  const safeArtifactName = (artifactName || `${artifactType || 'artifact'}`)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .slice(0, 120);
+  const filename = `${executionId}-${dateStr}-${timeStr}-${safeArtifactName}`;
+  const filepath = path.join(imagesDir, filename);
+
+  fs.writeFileSync(filepath, dataBase64, 'base64');
+
+  const artifactRecord = {
+    executionId,
+    artifactType,
+    artifactName,
+    mimeType,
+    capturedAt: capturedAt || new Date().toISOString(),
+    metadata: metadata || {},
+    filename,
+    filepath,
+  };
+
+  const metadataFilepath = writeJsonFile(
+    imagesDir,
+    `${filename}.json`,
+    artifactRecord
+  );
+
+  return { ...artifactRecord, metadataFilepath };
+}
+
+function getServerAddresses(port) {
+  const interfaces = os.networkInterfaces();
+  const results = new Set([
+    `http://localhost:${port}`,
+    `http://127.0.0.1:${port}`,
+  ]);
+
+  Object.values(interfaces).forEach((entries) => {
+    (entries || []).forEach((entry) => {
+      if (entry.family === 'IPv4' && !entry.internal) {
+        results.add(`http://${entry.address}:${port}`);
+      }
+    });
+  });
+
+  return Array.from(results);
+}
+
+function buildBootstrapConfig(overrides = {}) {
+  const profileId =
+    overrides.profile_id || overrides.profileId || DEFAULT_PROFILE_ID;
+  const wsUrl =
+    overrides.ws_url ||
+    overrides.wsUrl ||
+    `ws://${SERVER_HOST}:${PORT}/ws?token=${encodeURIComponent(AUTH_TOKEN)}`;
+  const internalApiPort =
+    overrides.internal_api_port ||
+    overrides.internalApiPort ||
+    INTERNAL_API_PORT;
+  const internalApiSecret =
+    overrides.internal_api_secret ||
+    overrides.internalApiSecret ||
+    INTERNAL_API_SECRET;
+
+  return {
+    profileId,
+    wsUrl,
+    internalApiPort,
+    internalApiSecret,
+  };
+}
+
+function internalApiAuthMiddleware(req, res, next) {
+  if (!INTERNAL_API_SECRET) return next();
+
+  const authHeader = req.headers.authorization || '';
+  if (authHeader === `Bearer ${INTERNAL_API_SECRET}`) {
+    next();
+    return;
+  }
+
+  res.status(401).json({ error: 'Unauthorized - Invalid internal API secret' });
+}
+
+function getBrowserSessionDir(profileId) {
+  const safeProfileId = (profileId || DEFAULT_PROFILE_ID).replace(
+    /[^a-zA-Z0-9-_]/g,
+    '_'
+  );
+  return path.join(__dirname, '.sessions', safeProfileId);
+}
+
+async function ensureDirectory(dirPath) {
+  await fs.promises.mkdir(dirPath, { recursive: true });
+}
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+    srv.on('error', reject);
+  });
+}
+
+async function waitForDebugEndpoint(port, timeoutMs = 30000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(
+        `http://${PLAYWRIGHT_REMOTE_DEBUGGING_HOST}:${port}/json/version`
+      );
+      if (response.ok) {
+        const json = await response.json();
+        if (json.webSocketDebuggerUrl) {
+          return json;
+        }
+      }
+    } catch (error) {
+      // keep polling
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw new Error(`Timed out waiting for remote debugging endpoint on ${port}`);
+}
+
+function escapePowerShellString(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function getOrphanBrowserPids(userDataDir) {
+  if (process.platform !== 'win32') return [];
+
+  const escapedDir = escapePowerShellString(userDataDir);
+  const script = `
+    $dir = '${escapedDir}'
+    Get-CimInstance Win32_Process |
+      Where-Object {
+        $_.Name -in @('chrome.exe', 'msedge.exe', 'orbita.exe') -and
+        $_.CommandLine -and
+        $_.CommandLine -match [regex]::Escape($dir)
+      } |
+      Select-Object -ExpandProperty ProcessId
+  `;
+
+  try {
+    const output = execFileSync(
+      'powershell',
+      ['-NoProfile', '-Command', script],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }
+    );
+
+    return output
+      .split(/\r?\n/)
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+  } catch (error) {
+    return [];
+  }
+}
+
+async function killBrowserProcessesForUserDataDir(userDataDir) {
+  const pids = getOrphanBrowserPids(userDataDir);
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch (error) {
+      // ignore kill errors
+    }
+  }
+
+  if (pids.length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+async function closeBrowserSession(profileId, { clearDataDir = false } = {}) {
+  const session = browserSessions.get(profileId);
+  const userDataDir = session?.userDataDir || getBrowserSessionDir(profileId);
+
+  if (session) {
+    browserSessions.delete(profileId);
+
+    try {
+      await session.context?.close();
+    } catch (error) {
+      console.warn(`⚠️ Failed to close browser session ${profileId}:`, error);
+    }
+
+    try {
+      session.browserProcess?.kill();
+    } catch (error) {
+      // ignore kill errors
+    }
+  }
+
+  await killBrowserProcessesForUserDataDir(userDataDir);
+
+  if (clearDataDir) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await fs.promises.rm(userDataDir, { recursive: true, force: true });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+
+        if (error.code !== 'EBUSY' && error.code !== 'EPERM') {
+          throw error;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+
+    if (lastError) throw lastError;
+  }
+}
+
+function waitForExtensionConnection(
+  profileId,
+  timeoutMs = PLAYWRIGHT_TIMEOUT_MS
+) {
+  const existing = resolveExtension(profileId);
+  if (existing?.ws?.readyState === WebSocket.OPEN) {
+    return Promise.resolve(existing);
+  }
+
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+
+    const timer = setInterval(() => {
+      const extension = resolveExtension(profileId);
+      if (extension?.ws?.readyState === WebSocket.OPEN) {
+        clearInterval(timer);
+        resolve(extension);
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        clearInterval(timer);
+        reject(
+          new Error(`Timed out waiting for extension connection (${profileId})`)
+        );
+      }
+    }, 1000);
+  });
+}
+
+async function launchBrowserSession({
+  profileId,
+  wsUrl,
+  internalApiPort,
+  internalApiSecret,
+}) {
+  if (!fs.existsSync(EXTENSION_BUILD_DIR)) {
+    throw new Error(
+      `Extension build directory not found: ${EXTENSION_BUILD_DIR}. Build the extension first.`
+    );
+  }
+
+  if (!RESOLVED_BROWSER_EXECUTABLE_PATH) {
+    throw new Error(
+      'No supported Chromium-based browser executable found. Set PLAYWRIGHT_EXECUTABLE_PATH in backend-test/.env.'
+    );
+  }
+
+  await closeBrowserSession(profileId);
+
+  const userDataDir = getBrowserSessionDir(profileId);
+  await ensureDirectory(userDataDir);
+  const remoteDebuggingPort = await getFreePort();
+  let browserProcess = null;
+  let browser = null;
+  let context = null;
+  const browserArgs = [
+    `--remote-debugging-port=${remoteDebuggingPort}`,
+    `--user-data-dir=${userDataDir}`,
+    `--disable-extensions-except=${EXTENSION_BUILD_DIR}`,
+    `--load-extension=${EXTENSION_BUILD_DIR}`,
+    '--no-default-browser-check',
+    '--disable-dev-shm-usage',
+    '--disable-features=DialMediaRouteProvider',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--new-window',
+    'about:blank',
+  ];
+  try {
+    browserProcess = spawn(RESOLVED_BROWSER_EXECUTABLE_PATH, browserArgs, {
+      detached: false,
+      stdio: 'ignore',
+    });
+
+    const debugInfo = await waitForDebugEndpoint(
+      remoteDebuggingPort,
+      Math.min(PLAYWRIGHT_TIMEOUT_MS, 30000)
+    );
+    browser = await chromium.connectOverCDP(debugInfo.webSocketDebuggerUrl);
+    context = browser.contexts()[0];
+    if (!context) {
+      throw new Error('Connected browser has no default context');
+    }
+
+    const serviceWorker =
+      context.serviceWorkers()[0] ||
+      (await context
+        .waitForEvent('serviceworker', {
+          timeout: Math.min(PLAYWRIGHT_TIMEOUT_MS, 30000),
+        })
+        .catch(() => null));
+    const detectedExtensionId = serviceWorker?.url()?.split('/')[2] || null;
+
+    if (serviceWorker) {
+      await serviceWorker.evaluate(
+        async ({
+          profileIdValue,
+          wsUrlValue,
+          internalApiPortValue,
+          internalApiSecretValue,
+        }) => {
+          await chrome.storage.local.set({
+            profileId: profileIdValue,
+            workerMode: true,
+            wsConfig: {
+              enabled: true,
+              url: wsUrlValue,
+            },
+            internalApiPort: internalApiPortValue,
+            internalApiSecret: internalApiSecretValue || null,
+          });
+        },
+        {
+          profileIdValue: profileId,
+          wsUrlValue: wsUrl,
+          internalApiPortValue: internalApiPort,
+          internalApiSecretValue: internalApiSecret || '',
+        }
+      );
+    }
+
+    const initUrl = `http://localhost:${PORT}/automa-init?profile_id=${encodeURIComponent(
+      profileId
+    )}&ws_url=${encodeURIComponent(
+      wsUrl
+    )}&internal_api_port=${encodeURIComponent(internalApiPort)}${
+      internalApiSecret
+        ? `&internal_api_secret=${encodeURIComponent(internalApiSecret)}`
+        : ''
+    }`;
+
+    if (
+      detectedExtensionId &&
+      !EXTENSION_IS_HEADLESS &&
+      OPEN_EXTENSION_UI_ON_LAUNCH
+    ) {
+      const extensionPage = await context.newPage();
+      await extensionPage.goto(
+        `chrome-extension://${detectedExtensionId}/newtab.html#/workflows`,
+        {
+          waitUntil: 'load',
+          timeout: PLAYWRIGHT_TIMEOUT_MS,
+        }
+      );
+    }
+
+    browserSessions.set(profileId, {
+      profileId,
+      browser,
+      browserProcess,
+      context,
+      remoteDebuggingPort,
+      serviceWorkerUrl: serviceWorker?.url() || null,
+      extensionId: detectedExtensionId,
+      userDataDir,
+      initUrl,
+      createdAt: new Date().toISOString(),
+    });
+
+    context.on('close', () => {
+      browserSessions.delete(profileId);
+    });
+
+    return browserSessions.get(profileId);
+  } catch (error) {
+    try {
+      await context?.close();
+    } catch (_) {
+      // ignore cleanup errors
+    }
+
+    try {
+      browserProcess?.kill();
+    } catch (_) {
+      // ignore cleanup errors
+    }
+
+    browserSessions.delete(profileId);
+
+    throw new Error(
+      `Failed to launch browser session using ${RESOLVED_BROWSER_EXECUTABLE_PATH}: ${error.message}`
+    );
+  }
+}
+
+async function ensureExtensionConnection({
+  profileId,
+  wsUrl,
+  internalApiPort,
+  internalApiSecret,
+  relaunch = false,
+}) {
+  const extension = resolveExtension(profileId);
+  if (!relaunch && extension?.ws?.readyState === WebSocket.OPEN) {
+    return extension;
+  }
+
+  await launchBrowserSession({
+    profileId,
+    wsUrl,
+    internalApiPort,
+    internalApiSecret,
+  });
+
+  return waitForExtensionConnection(profileId);
+}
+
+function buildSmokeWorkflow() {
+  return {
+    id: 'wf-smoke-delay',
+    name: 'Worker Smoke Delay',
+    version: '1.0.0',
+    extVersion: '1.29.12',
+    drawflow: {
+      nodes: [
+        {
+          id: 'trigger-smoke-1',
+          label: 'trigger',
+          data: {
+            disableBlock: false,
+            type: 'manual',
+            parameters: [],
+          },
+          position: { x: 80, y: 120 },
+          type: 'BlockBasic',
+        },
+        {
+          id: 'new-tab-smoke-1',
+          label: 'new-tab',
+          data: {
+            active: true,
+            customUserAgent: false,
+            disableBlock: false,
+            inGroup: false,
+            onError: {
+              dataToInsert: [],
+              enable: false,
+              errorMessage: '',
+              insertData: false,
+              retry: false,
+              retryInterval: 2,
+              retryTimes: 1,
+              toDo: 'error',
+            },
+            settings: {
+              blockTimeout: 0,
+              debugMode: false,
+            },
+            updatePrevTab: false,
+            url: 'about:blank',
+            userAgent: '',
+            waitTabLoaded: true,
+          },
+          position: { x: 360, y: 120 },
+          type: 'BlockBasic',
+        },
+        {
+          id: 'delay-smoke-1',
+          label: 'delay',
+          data: {
+            disableBlock: false,
+            time: 800,
+          },
+          position: { x: 660, y: 120 },
+          type: 'BlockDelay',
+        },
+      ],
+      edges: [
+        {
+          id: 'smoke-edge-trigger-new-tab',
+          source: 'trigger-smoke-1',
+          target: 'new-tab-smoke-1',
+          sourceHandle: 'trigger-smoke-1-output-1',
+          targetHandle: 'new-tab-smoke-1-input-1',
+        },
+        {
+          id: 'smoke-edge-new-tab-delay',
+          source: 'new-tab-smoke-1',
+          target: 'delay-smoke-1',
+          sourceHandle: 'new-tab-smoke-1-output-1',
+          targetHandle: 'delay-smoke-1-input-1',
+        },
+      ],
+    },
+    settings: {
+      saveLog: true,
+      notification: false,
+      debugMode: false,
+      blockDelay: 0,
+      onError: 'stop-workflow',
+    },
+    globalData: '{\n  "key": "value"\n}',
+  };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -52,11 +846,16 @@ if (!fs.existsSync(imagesDir)) {
 wss.on('connection', (ws, req) => {
   const urlParams = new URL(req.url, `http://${req.headers.host}`);
   const profileId = urlParams.searchParams.get('profile_id');
+  const wsToken = urlParams.searchParams.get('token');
 
   // Accept all connections — auth is validated via JWT in identify message
-  console.log('✅ New WebSocket connection established', profileId ? `(profile: ${profileId})` : '');
+  console.log(
+    '✅ New WebSocket connection established',
+    profileId ? `(profile: ${profileId})` : ''
+  );
 
   let extensionId = null;
+  let connectionId = null;
   let extensionInfo = null;
   let isAuthenticated = false;
 
@@ -66,9 +865,10 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (data) => {
     try {
       const message = JSON.parse(data.toString());
-      console.log('📨 Received from extension:', message.type);
+      const messageKind = message.command || message.type;
+      console.log('📨 Received from extension:', messageKind);
 
-      switch (message.type) {
+      switch (messageKind) {
         case 'identify':
           handleIdentify(ws, message);
           break;
@@ -101,18 +901,24 @@ wss.on('connection', (ws, req) => {
           console.log('📊 Status response:', message.data);
           break;
 
+        case 'error':
+          console.error('❌ [Extension Error]', message.error || message);
+          break;
+
         default:
-          console.warn('⚠️  Unknown message type:', message.type);
+          console.warn('⚠️  Unknown message kind:', messageKind);
       }
     } catch (error) {
       console.error('❌ Error handling message:', error);
-      ws.send(JSON.stringify({
-        type: 'error',
-        error: {
-          message: error.message,
-          stack: error.stack,
-        },
-      }));
+      ws.send(
+        JSON.stringify({
+          type: 'error',
+          error: {
+            message: error.message,
+            stack: error.stack,
+          },
+        })
+      );
     }
   });
 
@@ -121,9 +927,15 @@ wss.on('connection', (ws, req) => {
   // ─────────────────────────────────────────────────────────
   ws.on('close', (code, reason) => {
     console.log(`🔌 Connection closed: ${code} - ${reason}`);
-    if (extensionId) {
-      connectedExtensions.delete(extensionId);
-      console.log(`📤 Extension ${extensionId} removed from connected list`);
+    if (connectionId) {
+      finalizeRunningExecutionsForConnection(
+        connectionId,
+        `Connection closed: ${code} ${reason || ''}`.trim()
+      );
+    }
+    if (connectionId) {
+      connectedExtensions.delete(connectionId);
+      console.log(`📤 Extension ${connectionId} removed from connected list`);
     }
   });
 
@@ -141,21 +953,27 @@ wss.on('connection', (ws, req) => {
   function handleIdentify(ws, message) {
     // Extension sends: { type: 'identify', data: { extensionId, installationId, profileId, version, token } }
     // Validate JWT token from identify message (mock: accept any mock-jwt-* or non-empty token)
-    const jwtToken = message.data.token;
+    const jwtToken = message.data.token || wsToken;
     if (jwtToken) {
       // In mock server: validate against mockSessions
       const session = mockSessions.get(jwtToken);
       if (session) {
         isAuthenticated = true;
-        console.log(`🔐 Extension authenticated via JWT (user: ${session.user.email})`);
+        console.log(
+          `🔐 Extension authenticated via JWT (user: ${session.user.email})`
+        );
       } else {
         // Accept anyway in dev mode, just log warning
         isAuthenticated = true;
-        console.warn(`⚠️  Extension JWT not in mockSessions, accepting in dev mode`);
+        console.warn(
+          `⚠️  Extension JWT not in mockSessions, accepting in dev mode`
+        );
       }
     } else {
       isAuthenticated = true;
-      console.warn('⚠️  Extension connected without JWT token, accepting in dev mode');
+      console.warn(
+        '⚠️  Extension connected without JWT token, accepting in dev mode'
+      );
     }
 
     extensionId = message.data.extensionId;
@@ -166,22 +984,52 @@ wss.on('connection', (ws, req) => {
       version: message.data.version,
       connectedAt: new Date().toISOString(),
       ws: ws,
+      authToken: jwtToken || null,
+      isAuthenticated,
     };
 
-    connectedExtensions.set(extensionId, extensionInfo);
+    connectionId = getConnectionId(extensionInfo);
+
+    const previousConnection = connectedExtensions.get(connectionId);
+    if (
+      previousConnection &&
+      previousConnection.ws &&
+      previousConnection.ws !== ws &&
+      previousConnection.ws.readyState === WebSocket.OPEN
+    ) {
+      previousConnection.ws.close(4001, 'Superseded by newer connection');
+    }
+
+    connectedExtensions.set(connectionId, {
+      ...extensionInfo,
+      connectionId,
+    });
+    if (browserSessions.has(connectionId)) {
+      const session = browserSessions.get(connectionId);
+      browserSessions.set(connectionId, {
+        ...session,
+        connectionId,
+        extensionId: extensionInfo.extensionId,
+        installationId: extensionInfo.installationId,
+        connectedAt: extensionInfo.connectedAt,
+      });
+    }
     console.log('🔗 Extension identified:', {
+      connectionId,
       extensionId: extensionInfo.extensionId,
       profileId: extensionInfo.profileId,
       version: extensionInfo.version,
     });
 
     // Send welcome message — extension reads message.command
-    ws.send(JSON.stringify({
-      command: 'welcome',
-      message: 'Successfully connected to Automa WebSocket Server',
-      serverVersion: '1.0.0',
-      timestamp: Date.now(),
-    }));
+    ws.send(
+      JSON.stringify({
+        command: 'welcome',
+        message: 'Successfully connected to Automa WebSocket Server',
+        serverVersion: '1.0.0',
+        timestamp: Date.now(),
+      })
+    );
   }
 
   function handleWorkflowStarted(message) {
@@ -189,16 +1037,33 @@ wss.on('connection', (ws, req) => {
       executionId: message.executionId,
       workflowId: message.workflowId,
     });
-    
-    const execution = executionHistory.get(message.executionId) || {};
-    executionHistory.set(message.executionId, {
-      ...execution,
+
+    const execution = upsertExecution(message.executionId, {
       executionId: message.executionId,
       workflowId: message.workflowId,
       status: 'running',
       startedAt: message.timestamp,
       startedAtFormatted: new Date(message.timestamp).toISOString(),
+      profileId: extensionInfo?.profileId || null,
+      extensionId,
     });
+
+    const filepath = writeExecutionJsonFile({
+      executionId: message.executionId,
+      profileId: execution.profileId,
+      prefix: 'workflow-started',
+      timestamp: message.timestamp,
+      data: {
+        executionId: message.executionId,
+        workflowId: message.workflowId,
+        status: 'running',
+        timestamp: message.timestamp,
+        profileId: execution.profileId,
+        extensionId,
+      },
+    });
+
+    upsertExecution(message.executionId, { workflowStartedFile: filepath });
   }
 
   function handleWorkflowCompleted(message) {
@@ -207,17 +1072,25 @@ wss.on('connection', (ws, req) => {
       status: message.status,
       duration: message.duration ? `${message.duration}ms` : 'N/A',
     });
-    
-    const execution = executionHistory.get(message.executionId) || {};
-    executionHistory.set(message.executionId, {
-      ...execution,
+
+    const execution = upsertExecution(message.executionId, {
       status: 'completed',
       completedAt: message.timestamp,
       completedAtFormatted: new Date(message.timestamp).toISOString(),
       duration: message.duration,
       result: message.data,
     });
-    
+
+    const filepath = writeExecutionJsonFile({
+      executionId: message.executionId,
+      profileId: execution.profileId,
+      prefix: 'workflow-completed',
+      timestamp: message.timestamp,
+      data: message,
+    });
+
+    upsertExecution(message.executionId, { workflowCompletedFile: filepath });
+
     // Log completion
     logExecution(message.executionId);
   }
@@ -228,7 +1101,7 @@ wss.on('connection', (ws, req) => {
       status: message.status,
       duration: message.duration ? `${message.duration}ms` : 'N/A',
     });
-    
+
     // Log detailed response data
     console.log('📊 [Backend] Full workflow response:', {
       executionId: message.executionId,
@@ -240,18 +1113,20 @@ wss.on('connection', (ws, req) => {
       dataKeys: message.data ? Object.keys(message.data) : [],
       logsCount: message.logs ? message.logs.length : 0,
       hasTableData: message.data?.table ? message.data.table.length : 0,
-      hasVariables: message.data?.variables ? Object.keys(message.data.variables).length : 0,
+      hasVariables: message.data?.variables
+        ? Object.keys(message.data.variables).length
+        : 0,
       hasExtractedData: !!message.data?.extractedData,
       sampleData: {
         table: message.data?.table?.slice(0, 2) || [],
-        variables: message.data?.variables ? Object.keys(message.data.variables).slice(0, 5) : [],
-        logs: message.logs?.slice(0, 3) || []
-      }
+        variables: message.data?.variables
+          ? Object.keys(message.data.variables).slice(0, 5)
+          : [],
+        logs: message.logs?.slice(0, 3) || [],
+      },
     });
-    
-    const execution = executionHistory.get(message.executionId) || {};
-    executionHistory.set(message.executionId, {
-      ...execution,
+
+    const execution = upsertExecution(message.executionId, {
       status: message.status,
       message: message.message,
       completedAt: message.timestamp,
@@ -260,7 +1135,17 @@ wss.on('connection', (ws, req) => {
       data: message.data,
       logs: message.logs,
     });
-    
+
+    const filepath = writeExecutionJsonFile({
+      executionId: message.executionId,
+      profileId: execution.profileId,
+      prefix: 'workflow-result',
+      timestamp: message.timestamp,
+      data: message,
+    });
+
+    upsertExecution(message.executionId, { workflowResultFile: filepath });
+
     // Log detailed results
     logExecutionResults(message.executionId, message);
   }
@@ -270,16 +1155,24 @@ wss.on('connection', (ws, req) => {
       executionId: message.executionId,
       error: message.error?.message,
     });
-    
-    const execution = executionHistory.get(message.executionId) || {};
-    executionHistory.set(message.executionId, {
-      ...execution,
+
+    const execution = upsertExecution(message.executionId, {
       status: 'failed',
       completedAt: message.timestamp,
       completedAtFormatted: new Date(message.timestamp).toISOString(),
       error: message.error,
     });
-    
+
+    const filepath = writeExecutionJsonFile({
+      executionId: message.executionId,
+      profileId: execution.profileId,
+      prefix: 'workflow-failed',
+      timestamp: message.timestamp,
+      data: message,
+    });
+
+    upsertExecution(message.executionId, { workflowFailedFile: filepath });
+
     // Log failure
     logExecution(message.executionId);
   }
@@ -289,14 +1182,22 @@ wss.on('connection', (ws, req) => {
       executionId: message.executionId,
       workflowId: message.workflowId,
     });
-    
-    const execution = executionHistory.get(message.executionId) || {};
-    executionHistory.set(message.executionId, {
-      ...execution,
+
+    const execution = upsertExecution(message.executionId, {
       status: 'stopped',
       stoppedAt: message.timestamp,
       stoppedAtFormatted: new Date(message.timestamp).toISOString(),
     });
+
+    const filepath = writeExecutionJsonFile({
+      executionId: message.executionId,
+      profileId: execution.profileId,
+      prefix: 'workflow-stopped',
+      timestamp: message.timestamp,
+      data: message,
+    });
+
+    upsertExecution(message.executionId, { workflowStoppedFile: filepath });
   }
 
   function logExecution(executionId) {
@@ -321,52 +1222,88 @@ wss.on('connection', (ws, req) => {
   function logExecutionResults(executionId, message) {
     console.log('');
     console.log('╔═══════════════════════════════════════════════════╗');
-    console.log(`║ 📦 WORKFLOW RESULT: ${executionId.substring(0, 20).padEnd(27)} ║`);
+    console.log(
+      `║ 📦 WORKFLOW RESULT: ${executionId.substring(0, 20).padEnd(27)} ║`
+    );
     console.log('╠═══════════════════════════════════════════════════╣');
     console.log(`║ Status:   ${message.status.toUpperCase().padEnd(40)} ║`);
-    console.log(`║ Message:  ${(message.message || '').substring(0, 40).padEnd(40)} ║`);
+    console.log(
+      `║ Message:  ${(message.message || '').substring(0, 40).padEnd(40)} ║`
+    );
     console.log(`║ Duration: ${(message.duration + 'ms').padEnd(40)} ║`);
     console.log('╠═══════════════════════════════════════════════════╣');
-    
+
     if (message.data) {
       console.log('║ 📊 DATA:                                          ║');
-      
+
       if (message.data.table && message.data.table.length > 0) {
-        console.log(`║   - Table rows: ${String(message.data.table.length).padEnd(33)} ║`);
-        console.log(`║   - Sample: ${JSON.stringify(message.data.table[0]).substring(0, 35).padEnd(37)} ║`);
+        console.log(
+          `║   - Table rows: ${String(message.data.table.length).padEnd(33)} ║`
+        );
+        console.log(
+          `║   - Sample: ${JSON.stringify(message.data.table[0])
+            .substring(0, 35)
+            .padEnd(37)} ║`
+        );
       }
-      
-      if (message.data.variables && Object.keys(message.data.variables).length > 0) {
+
+      if (
+        message.data.variables &&
+        Object.keys(message.data.variables).length > 0
+      ) {
         const varCount = Object.keys(message.data.variables).length;
         console.log(`║   - Variables: ${String(varCount).padEnd(32)} ║`);
-        Object.entries(message.data.variables).slice(0, 3).forEach(([key, value]) => {
-          const varLine = `${key}: ${JSON.stringify(value)}`.substring(0, 37);
-          console.log(`║     • ${varLine.padEnd(41)} ║`);
-        });
+        Object.entries(message.data.variables)
+          .slice(0, 3)
+          .forEach(([key, value]) => {
+            const varLine = `${key}: ${JSON.stringify(value)}`.substring(0, 37);
+            console.log(`║     • ${varLine.padEnd(41)} ║`);
+          });
       }
-      
+
       if (message.data.extractedData) {
         console.log('║   - Extracted Data:                               ║');
-        console.log(`║     • Blocks: ${String(message.data.extractedData.blocksExecuted).padEnd(33)} ║`);
-        console.log(`║     • Time: ${String(message.data.extractedData.executionTime + 'ms').padEnd(35)} ║`);
-        if (message.data.extractedData.errors && message.data.extractedData.errors.length > 0) {
-          console.log(`║     • Errors: ${String(message.data.extractedData.errors.length).padEnd(33)} ║`);
+        console.log(
+          `║     • Blocks: ${String(
+            message.data.extractedData.blocksExecuted
+          ).padEnd(33)} ║`
+        );
+        console.log(
+          `║     • Time: ${String(
+            message.data.extractedData.executionTime + 'ms'
+          ).padEnd(35)} ║`
+        );
+        if (
+          message.data.extractedData.errors &&
+          message.data.extractedData.errors.length > 0
+        ) {
+          console.log(
+            `║     • Errors: ${String(
+              message.data.extractedData.errors.length
+            ).padEnd(33)} ║`
+          );
         }
       }
     }
-    
+
     if (message.logs && message.logs.length > 0) {
       console.log('╠═══════════════════════════════════════════════════╣');
       console.log(`║ 📝 LOGS: ${String(message.logs.length).padEnd(40)} ║`);
       message.logs.slice(0, 5).forEach((log, i) => {
-        const logLine = `${log.name || 'Block'}: ${log.type || 'info'}`.substring(0, 40);
+        const logLine = `${log.name || 'Block'}: ${
+          log.type || 'info'
+        }`.substring(0, 40);
         console.log(`║   ${String(i + 1)}. ${logLine.padEnd(44)} ║`);
       });
       if (message.logs.length > 5) {
-        console.log(`║   ... and ${String(message.logs.length - 5)} more logs${' '.repeat(28)} ║`);
+        console.log(
+          `║   ... and ${String(message.logs.length - 5)} more logs${' '.repeat(
+            28
+          )} ║`
+        );
       }
     }
-    
+
     console.log('╚═══════════════════════════════════════════════════╝');
     console.log('');
   }
@@ -378,100 +1315,372 @@ wss.on('connection', (ws, req) => {
 
 // Health check
 app.get('/health', (req, res) => {
+  const bootstrapConfig = buildBootstrapConfig();
+
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     connectedExtensions: connectedExtensions.size,
     uptime: process.uptime(),
+    extensionBuildDir: EXTENSION_BUILD_DIR,
+    extensionBuildMode: EXTENSION_IS_HEADLESS ? 'headless' : 'full',
+    wsUrl: bootstrapConfig.wsUrl,
+    internalApiPort: bootstrapConfig.internalApiPort,
+    bootstrapUrl: `http://localhost:${PORT}/automa-init?profile_id=${encodeURIComponent(
+      bootstrapConfig.profileId
+    )}&ws_url=${encodeURIComponent(
+      bootstrapConfig.wsUrl
+    )}&internal_api_port=${encodeURIComponent(
+      bootstrapConfig.internalApiPort
+    )}`,
+  });
+});
+
+app.get('/healthz', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get('/automa-init', (req, res) => {
+  const bootstrapConfig = buildBootstrapConfig(req.query);
+  const initUrl = new URL(`http://localhost:${PORT}/automa-init`);
+  initUrl.searchParams.set('profile_id', bootstrapConfig.profileId);
+  initUrl.searchParams.set('ws_url', bootstrapConfig.wsUrl);
+  initUrl.searchParams.set(
+    'internal_api_port',
+    bootstrapConfig.internalApiPort
+  );
+
+  if (bootstrapConfig.internalApiSecret) {
+    initUrl.searchParams.set(
+      'internal_api_secret',
+      bootstrapConfig.internalApiSecret
+    );
+  }
+
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Automa Init</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 32px; line-height: 1.5; background: #111827; color: #F9FAFB; }
+    code { background: rgba(255,255,255,.08); padding: 2px 6px; border-radius: 4px; }
+    .card { max-width: 860px; margin: 0 auto; padding: 24px; background: #1F2937; border-radius: 12px; }
+    a { color: #93C5FD; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Automa Worker Bootstrap</h1>
+    <p>Keep this tab open in the same browser profile as the extension. The extension background will read this URL and bootstrap worker-mode WebSocket settings without login.</p>
+    <p><strong>profile_id:</strong> <code>${
+      bootstrapConfig.profileId
+    }</code></p>
+    <p><strong>ws_url:</strong> <code>${bootstrapConfig.wsUrl}</code></p>
+    <p><strong>internal_api_port:</strong> <code>${
+      bootstrapConfig.internalApiPort
+    }</code></p>
+    <p><strong>internal_api_secret:</strong> <code>${
+      bootstrapConfig.internalApiSecret || '(empty)'
+    }</code></p>
+    <p><strong>Canonical URL:</strong> <a href="${initUrl.toString()}">${initUrl.toString()}</a></p>
+    <p><a href="/">Open backend dashboard</a></p>
+  </div>
+</body>
+</html>`);
+});
+
+app.get('/api/bootstrap', (req, res) => {
+  const bootstrapConfig = buildBootstrapConfig(req.query);
+  res.json({
+    extensionBuildDir: EXTENSION_BUILD_DIR,
+    extensionBuildMode: EXTENSION_IS_HEADLESS ? 'headless' : 'full',
+    profileId: bootstrapConfig.profileId,
+    wsUrl: bootstrapConfig.wsUrl,
+    internalApiPort: bootstrapConfig.internalApiPort,
+    internalApiSecret: bootstrapConfig.internalApiSecret,
+    initUrl: `http://localhost:${PORT}/automa-init?profile_id=${encodeURIComponent(
+      bootstrapConfig.profileId
+    )}&ws_url=${encodeURIComponent(
+      bootstrapConfig.wsUrl
+    )}&internal_api_port=${encodeURIComponent(
+      bootstrapConfig.internalApiPort
+    )}${
+      bootstrapConfig.internalApiSecret
+        ? `&internal_api_secret=${encodeURIComponent(
+            bootstrapConfig.internalApiSecret
+          )}`
+        : ''
+    }`,
   });
 });
 
 // Get connected extensions
 app.get('/api/extensions', (req, res) => {
-  const extensions = Array.from(connectedExtensions.values()).map(ext => ({
+  const extensions = Array.from(connectedExtensions.values()).map((ext) => ({
+    connectionId: ext.connectionId,
     extensionId: ext.extensionId,
+    profileId: ext.profileId,
     installationId: ext.installationId,
     version: ext.version,
     connectedAt: ext.connectedAt,
+    isAuthenticated: ext.isAuthenticated,
   }));
-  
+
   res.json({
     count: extensions.length,
     extensions,
+    browserSessions: listBrowserSessions(),
   });
 });
 
-// Execute workflow on specific extension
-app.post('/api/execute', (req, res) => {
-  const { extensionId, workflow, inputs, options } = req.body;
-  
-  // Validate request
-  if (!extensionId) {
-    return res.status(400).json({ error: 'extensionId is required' });
+app.get('/api/browser-sessions', (req, res) => {
+  res.json({
+    count: browserSessions.size,
+    sessions: listBrowserSessions(),
+  });
+});
+
+app.post('/api/browser-sessions/launch', async (req, res) => {
+  const {
+    profileId = `pw-${uuidv4()}`,
+    relaunch = false,
+    waitForConnection = true,
+  } = req.body || {};
+  const bootstrapConfig = buildBootstrapConfig({ profile_id: profileId });
+
+  try {
+    if (relaunch) {
+      await closeBrowserSession(profileId, { clearDataDir: true });
+    }
+
+    let extension = null;
+    if (waitForConnection) {
+      try {
+        extension = await ensureExtensionConnection({
+          profileId,
+          wsUrl: bootstrapConfig.wsUrl,
+          internalApiPort: bootstrapConfig.internalApiPort,
+          internalApiSecret: bootstrapConfig.internalApiSecret,
+          relaunch,
+        });
+      } catch (error) {
+        const session =
+          listBrowserSessions().find((item) => item.profileId === profileId) ||
+          null;
+
+        if (session) {
+          return res.json({
+            success: true,
+            profileId,
+            session,
+            extension: null,
+            connected: false,
+            warning: error.message,
+          });
+        }
+
+        throw error;
+      }
+    } else {
+      await launchBrowserSession({
+        profileId,
+        wsUrl: bootstrapConfig.wsUrl,
+        internalApiPort: bootstrapConfig.internalApiPort,
+        internalApiSecret: bootstrapConfig.internalApiSecret,
+      });
+    }
+
+    res.json({
+      success: true,
+      profileId,
+      session:
+        listBrowserSessions().find(
+          (session) => session.profileId === profileId
+        ) || null,
+      extension: extension
+        ? {
+            connectionId: extension.connectionId,
+            extensionId: extension.extensionId,
+            profileId: extension.profileId,
+          }
+        : null,
+      connected: Boolean(extension),
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to launch browser session',
+      message: error.message,
+    });
   }
-  
+});
+
+app.post('/api/browser-sessions/:profileId/close', async (req, res) => {
+  const { profileId } = req.params;
+
+  try {
+    await closeBrowserSession(profileId);
+    res.json({
+      success: true,
+      profileId,
+      message: 'Browser session closed',
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to close browser session',
+      message: error.message,
+    });
+  }
+});
+
+app.get('/api/browser-sessions/:profileId/debug', async (req, res) => {
+  const { profileId } = req.params;
+  const session = browserSessions.get(profileId);
+
+  if (!session) {
+    return res.status(404).json({ error: 'Browser session not found' });
+  }
+
+  try {
+    const serviceWorker = session.context.serviceWorkers()[0] || null;
+    if (!serviceWorker) {
+      return res.status(404).json({ error: 'Service worker not available' });
+    }
+
+    const snapshot = await serviceWorker.evaluate(async () => {
+      const storage = await chrome.storage.local.get(null);
+      return {
+        runtimeId: chrome.runtime.id,
+        serviceWorkerUrl: self.location.href,
+        storage,
+      };
+    });
+
+    res.json({
+      success: true,
+      profileId,
+      snapshot,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to inspect browser session',
+      message: error.message,
+    });
+  }
+});
+
+// Execute workflow on specific extension
+app.post('/api/execute', async (req, res) => {
+  const {
+    connectionId,
+    extensionId,
+    profileId,
+    workflow,
+    inputs,
+    options,
+    autoLaunchBrowser = true,
+    relaunchBrowser = false,
+  } = req.body;
+  let targetExtensionId = connectionId || profileId || extensionId;
+
   if (!workflow) {
     return res.status(400).json({ error: 'workflow is required' });
   }
-  
-  // Check if extension is connected
-  const extension = connectedExtensions.get(extensionId);
-  if (!extension || extension.ws.readyState !== WebSocket.OPEN) {
-    return res.status(400).json({ 
-      error: 'Extension not connected',
-      extensionId,
+
+  if (!targetExtensionId && !autoLaunchBrowser) {
+    return res.status(400).json({
+      error:
+        'connectionId, profileId, or extensionId is required when autoLaunchBrowser is false',
     });
   }
-  
-  // Generate execution ID
-  const executionId = uuidv4();
-  
-  // Store execution info
-  executionHistory.set(executionId, {
-    executionId,
-    extensionId,
-    status: 'pending',
-    requestedAt: Date.now(),
-    workflow: {
-      name: workflow.name,
-      id: workflow.id,
-    },
-  });
-  
-  // Send execution request to extension
-  // Extension (BackgroundWebSocket.js) reads: message.command === 'executeAction'
-  // Then: message.request_id for executionId
-  //       message.params.workflow_config for workflow data
-  //       message.params.options for execution options
-  //       message.params.params for input variables
-  const message = {
-    command: 'executeAction',
-    request_id: executionId,
-    params: {
-      workflow_config: workflow,
-      options: options || {},
-      params: inputs || {},
-    },
-  };
+
+  const wsUrl = buildBootstrapConfig().wsUrl;
+  const workerProfileId = targetExtensionId || `pw-${uuidv4()}`;
 
   try {
+    let extension = resolveExtension(targetExtensionId);
+
+    if (
+      (!extension || extension.ws.readyState !== WebSocket.OPEN) &&
+      autoLaunchBrowser
+    ) {
+      extension = await ensureExtensionConnection({
+        profileId: workerProfileId,
+        wsUrl,
+        internalApiPort: INTERNAL_API_PORT,
+        internalApiSecret: INTERNAL_API_SECRET || null,
+        relaunch: relaunchBrowser,
+      });
+      targetExtensionId = extension.connectionId;
+    }
+
+    if (!extension || extension.ws.readyState !== WebSocket.OPEN) {
+      return res.status(400).json({
+        error: 'Extension not connected',
+        targetExtensionId,
+      });
+    }
+
+    const executionId = uuidv4();
+
+    upsertExecution(executionId, {
+      executionId,
+      connectionId: extension.connectionId,
+      extensionId: extension.extensionId,
+      profileId: extension.profileId,
+      status: 'pending',
+      requestedAt: Date.now(),
+      requestedAtFormatted: new Date().toISOString(),
+      workflow: {
+        name: workflow.name,
+        id: workflow.id,
+      },
+    });
+
+    const message = {
+      command: 'executeAction',
+      request_id: executionId,
+      params: {
+        action_id: `action-${executionId}`,
+        action_index: 0,
+        action_type: 'workflow.execute',
+        workflow_id: workflow.id,
+        workflow_name: workflow.name,
+        workflow_version: workflow.version || workflow.extVersion || '1.0.0',
+        workflow_config: workflow,
+        options: options || {},
+        params: inputs || {},
+        internal_api_port: INTERNAL_API_PORT,
+        internal_api_secret: INTERNAL_API_SECRET || null,
+      },
+    };
+
     extension.ws.send(JSON.stringify(message));
     console.log('📤 Workflow execution request sent:', {
       executionId,
-      extensionId,
+      connectionId: extension.connectionId,
+      extensionId: extension.extensionId,
       workflowName: workflow.name,
+      autoLaunchBrowser,
     });
-    
+
     res.json({
       success: true,
       executionId,
       status: 'pending',
+      connectionId: extension.connectionId,
+      profileId: extension.profileId,
+      launchedBrowser: autoLaunchBrowser,
       message: 'Workflow execution request sent to extension',
     });
   } catch (error) {
-    console.error('❌ Error sending message:', error);
+    console.error('❌ Error executing workflow:', error);
     res.status(500).json({
-      error: 'Failed to send message to extension',
+      error: 'Failed to execute workflow',
       message: error.message,
     });
   }
@@ -480,31 +1689,52 @@ app.post('/api/execute', (req, res) => {
 // Execute workflow (broadcast to all extensions)
 app.post('/api/execute-all', (req, res) => {
   const { workflow, inputs, options } = req.body;
-  
+
   if (!workflow) {
     return res.status(400).json({ error: 'workflow is required' });
   }
-  
+
   if (connectedExtensions.size === 0) {
     return res.status(400).json({ error: 'No extensions connected' });
   }
-  
+
   const results = [];
-  
+
   connectedExtensions.forEach((extension, extensionId) => {
     if (extension.ws.readyState === WebSocket.OPEN) {
       const executionId = uuidv4();
-      
+      upsertExecution(executionId, {
+        executionId,
+        connectionId: extension.connectionId,
+        extensionId: extension.extensionId,
+        profileId: extension.profileId,
+        status: 'pending',
+        requestedAt: Date.now(),
+        requestedAtFormatted: new Date().toISOString(),
+        workflow: {
+          name: workflow.name,
+          id: workflow.id,
+        },
+      });
+
       const message = {
         command: 'executeAction',
         request_id: executionId,
         params: {
+          action_id: `action-${executionId}`,
+          action_index: 0,
+          action_type: 'workflow.execute',
+          workflow_id: workflow.id,
+          workflow_name: workflow.name,
+          workflow_version: workflow.version || workflow.extVersion || '1.0.0',
           workflow_config: workflow,
           options: options || {},
           params: inputs || {},
+          internal_api_port: INTERNAL_API_PORT,
+          internal_api_secret: INTERNAL_API_SECRET || null,
         },
       };
-      
+
       try {
         extension.ws.send(JSON.stringify(message));
         results.push({
@@ -521,7 +1751,7 @@ app.post('/api/execute-all', (req, res) => {
       }
     }
   });
-  
+
   res.json({
     success: true,
     message: `Sent to ${results.length} extensions`,
@@ -529,25 +1759,68 @@ app.post('/api/execute-all', (req, res) => {
   });
 });
 
+app.post('/api/execute-smoke', async (req, res) => {
+  const {
+    profileId = `pw-smoke-${uuidv4()}`,
+    autoLaunchBrowser = true,
+    relaunchBrowser = false,
+  } = req.body || {};
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${PORT}/api/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profileId,
+        autoLaunchBrowser,
+        relaunchBrowser,
+        workflow: buildSmokeWorkflow(),
+        inputs: {},
+        options: { checkParams: false },
+      }),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      return res.status(response.status).json(result);
+    }
+
+    res.json({
+      ...result,
+      workflow: {
+        id: 'wf-smoke-delay',
+        name: 'Worker Smoke Delay',
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to execute smoke workflow',
+      message: error.message,
+    });
+  }
+});
+
 // Stop workflow execution
 app.post('/api/stop/:executionId', (req, res) => {
   const { executionId } = req.params;
-  
+
   const execution = executionHistory.get(executionId);
   if (!execution) {
     return res.status(404).json({ error: 'Execution not found' });
   }
-  
-  const extension = connectedExtensions.get(execution.extensionId);
+
+  const extension = resolveExtension(
+    execution.connectionId || execution.profileId || execution.extensionId
+  );
   if (!extension || extension.ws.readyState !== WebSocket.OPEN) {
     return res.status(400).json({ error: 'Extension not connected' });
   }
-  
+
   const message = {
     command: 'stop_workflow',
     data: { executionId },
   };
-  
+
   try {
     extension.ws.send(JSON.stringify(message));
     res.json({
@@ -567,7 +1840,7 @@ app.get('/api/executions', (req, res) => {
   const executions = Array.from(executionHistory.values())
     .sort((a, b) => (b.requestedAt || 0) - (a.requestedAt || 0))
     .slice(0, 100); // Last 100 executions
-  
+
   res.json({
     count: executions.length,
     executions,
@@ -578,30 +1851,30 @@ app.get('/api/executions', (req, res) => {
 app.get('/api/executions/:executionId', (req, res) => {
   const { executionId } = req.params;
   const execution = executionHistory.get(executionId);
-  
+
   if (!execution) {
     return res.status(404).json({ error: 'Execution not found' });
   }
-  
+
   res.json(execution);
 });
 
 // Get extension status
 app.post('/api/status/:extensionId', (req, res) => {
   const { extensionId } = req.params;
-  
-  const extension = connectedExtensions.get(extensionId);
+
+  const extension = resolveExtension(extensionId);
   if (!extension || extension.ws.readyState !== WebSocket.OPEN) {
     return res.status(400).json({ error: 'Extension not connected' });
   }
-  
+
   const requestId = uuidv4();
-  
+
   const message = {
     command: 'get_status',
     requestId,
   };
-  
+
   try {
     extension.ws.send(JSON.stringify(message));
     res.json({
@@ -620,20 +1893,20 @@ app.post('/api/status/:extensionId', (req, res) => {
 // Send ping to extension
 app.post('/api/ping/:extensionId', (req, res) => {
   const { extensionId } = req.params;
-  
-  const extension = connectedExtensions.get(extensionId);
+
+  const extension = resolveExtension(extensionId);
   if (!extension || extension.ws.readyState !== WebSocket.OPEN) {
     return res.status(400).json({ error: 'Extension not connected' });
   }
-  
+
   const requestId = uuidv4();
   const startTime = Date.now();
-  
+
   const message = {
     command: 'ping',
     requestId,
   };
-  
+
   try {
     extension.ws.send(JSON.stringify(message));
     res.json({
@@ -650,14 +1923,178 @@ app.post('/api/ping/:extensionId', (req, res) => {
   }
 });
 
+// Worker internal API compatibility
+app.post('/action-log', internalApiAuthMiddleware, (req, res) => {
+  const {
+    job_id: executionId,
+    action_index: actionIndex = 0,
+    log_level: logLevel = 'info',
+    log_type: logType = 'general',
+    message = '',
+    log_data: logData = {},
+  } = req.body || {};
+
+  if (!executionId) {
+    return res.status(404).json({ error: 'job_id is required' });
+  }
+
+  const logRecord = {
+    executionId,
+    actionIndex,
+    logLevel,
+    logType,
+    message,
+    logData,
+    receivedAt: new Date().toISOString(),
+  };
+
+  appendExecutionItem(executionId, 'actionLogs', logRecord);
+  workerLogs.set(`action:${executionId}:${Date.now()}`, logRecord);
+
+  const execution = getExecutionRecord(executionId);
+  const logFilepath = writeExecutionJsonFile({
+    executionId,
+    profileId: execution.profileId,
+    prefix: `action-${actionIndex}`,
+    data: logRecord,
+  });
+
+  upsertExecution(executionId, {
+    lastActionLogFile: logFilepath,
+  });
+
+  res.json({ status: 'ok', file: logFilepath });
+});
+
+app.post('/workflow-log', internalApiAuthMiddleware, (req, res) => {
+  const {
+    job_id: executionId,
+    action_index: actionIndex = 0,
+    log_level: logLevel = 'info',
+    log_type: logType = 'workflow',
+    message = '',
+    log_data: logData = {},
+  } = req.body || {};
+
+  if (!executionId) {
+    return res.status(404).json({ error: 'job_id is required' });
+  }
+
+  const workflowLog = {
+    actionIndex,
+    logLevel,
+    logType,
+    message,
+    logData,
+    receivedAt: new Date().toISOString(),
+  };
+
+  appendExecutionItem(executionId, 'workflowLogs', workflowLog);
+  const execution = upsertExecution(executionId, {
+    status: logData.status || 'finished',
+    workflowId:
+      logData.workflowId || executionHistory.get(executionId)?.workflowId,
+    workflowName:
+      logData.workflowName || executionHistory.get(executionId)?.workflow?.name,
+    message,
+    completedAtFormatted: new Date().toISOString(),
+  });
+
+  const workflowLogFile = persistWorkflowLogFile(
+    executionId,
+    workflowLog,
+    execution.profileId
+  );
+
+  upsertExecution(executionId, {
+    workflowLogFile,
+  });
+
+  res.json({ status: 'ok', file: workflowLogFile });
+});
+
+app.post('/artifact-log', internalApiAuthMiddleware, (req, res) => {
+  const {
+    job_id: executionId,
+    artifact_type: artifactType,
+    artifact_name: artifactName,
+    data_base64: dataBase64,
+    mime_type: mimeType,
+    captured_at: capturedAt,
+    metadata = {},
+  } = req.body || {};
+
+  if (!executionId) {
+    return res.status(404).json({ error: 'job_id is required' });
+  }
+
+  if (!dataBase64) {
+    return res.status(400).json({ error: 'data_base64 is required' });
+  }
+
+  try {
+    const artifactRecord = saveBase64Artifact({
+      executionId,
+      artifactType,
+      artifactName,
+      dataBase64,
+      mimeType,
+      capturedAt,
+      metadata,
+    });
+
+    appendExecutionItem(executionId, 'artifacts', artifactRecord);
+    workerArtifacts.set(
+      `${executionId}:${artifactRecord.filename}`,
+      artifactRecord
+    );
+
+    res.status(202).json({
+      status: 'queued',
+      artifact: artifactRecord,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to save artifact',
+      message: error.message,
+    });
+  }
+});
+
+app.post('/finish-job', internalApiAuthMiddleware, (req, res) => {
+  const { job_id: executionId } = req.body || {};
+
+  if (!executionId) {
+    return res.status(404).json({ error: 'job_id is required' });
+  }
+
+  upsertExecution(executionId, {
+    finishJobCalledAt: Date.now(),
+    finishJobCalledAtFormatted: new Date().toISOString(),
+  });
+
+  const execution = getExecutionRecord(executionId);
+  const finishFilepath = persistFinishJobFile(executionId, execution.profileId);
+
+  res.json({ status: 'ok', file: finishFilepath });
+});
+
 // Receive workflow log data from extension
 app.post('/api/workflow-log', (req, res) => {
-  const { workflowId, status, timestamp, workflowRefData, variables, globalData, tableData } = req.body;
-  
+  const {
+    workflowId,
+    status,
+    timestamp,
+    workflowRefData,
+    variables,
+    globalData,
+    tableData,
+  } = req.body;
+
   if (!workflowId) {
     return res.status(400).json({ error: 'workflowId is required' });
   }
-  
+
   try {
     // Create log data object
     const logData = {
@@ -670,20 +2107,23 @@ app.post('/api/workflow-log', (req, res) => {
       variables,
       globalData,
     };
-    
+
     // Generate filename with timestamp - handle invalid dates gracefully
     let date;
     let dateStr, timeStr;
-    
+
     try {
       date = timestamp ? new Date(timestamp) : new Date();
-      
+
       // Check if date is valid
       if (isNaN(date.getTime())) {
-        console.warn('⚠️  [Backend] Invalid timestamp, using current date:', timestamp);
+        console.warn(
+          '⚠️  [Backend] Invalid timestamp, using current date:',
+          timestamp
+        );
         date = new Date();
       }
-      
+
       dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
       timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-'); // HH-MM-SS
     } catch (dateError) {
@@ -692,21 +2132,21 @@ app.post('/api/workflow-log', (req, res) => {
       dateStr = date.toISOString().split('T')[0];
       timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-');
     }
-    
+
     const filename = `workflow-${workflowId}-${dateStr}-${timeStr}.json`;
     const filepath = path.join(logsDir, filename);
-    
+
     // Write to file
     fs.writeFileSync(filepath, JSON.stringify(logData, null, 2));
-    
+
     console.log('📝 [Backend] Workflow log saved:', {
       workflowId,
       status,
       filename,
       filepath,
-      dataSize: JSON.stringify(logData).length
+      dataSize: JSON.stringify(logData).length,
     });
-    
+
     res.json({
       success: true,
       message: 'Workflow log saved successfully',
@@ -725,37 +2165,47 @@ app.post('/api/workflow-log', (req, res) => {
 
 // Receive screenshot from extension
 app.post('/api/screenshot', (req, res) => {
-  const { 
-    workflowId, 
-    blockId, 
-    blockLabel, 
-    errorMessage, 
-    errorStack, 
+  const {
+    workflowId,
+    blockId,
+    blockLabel,
+    errorMessage,
+    errorStack,
     status,
-    timestamp, 
-    screenshotDataUrl, 
-    activeTabUrl 
+    timestamp,
+    screenshotDataUrl,
+    activeTabUrl,
   } = req.body;
-  
+
   if (!workflowId || !screenshotDataUrl) {
-    return res.status(400).json({ error: 'workflowId and screenshotDataUrl are required' });
+    return res
+      .status(400)
+      .json({ error: 'workflowId and screenshotDataUrl are required' });
   }
-  
+
   try {
     // Extract base64 data from data URL
-    const base64Data = screenshotDataUrl.replace(/^data:image\/[a-z]+;base64,/, '');
-    
+    const base64Data = screenshotDataUrl.replace(
+      /^data:image\/[a-z]+;base64,/,
+      ''
+    );
+
     // Generate filename with timestamp and status
     const date = new Date(timestamp);
     const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
     const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-'); // HH-MM-SS
-    const statusPrefix = status === 'success' ? 'success' : status === 'manual' ? 'manual' : 'error';
+    const statusPrefix =
+      status === 'success'
+        ? 'success'
+        : status === 'manual'
+        ? 'manual'
+        : 'error';
     const filename = `screenshot-${statusPrefix}-${workflowId}-${blockId}-${dateStr}-${timeStr}.jpg`;
     const filepath = path.join(imagesDir, filename);
-    
+
     // Write image file
     fs.writeFileSync(filepath, base64Data, 'base64');
-    
+
     // Create metadata file
     const metadata = {
       workflowId,
@@ -770,11 +2220,11 @@ app.post('/api/screenshot', (req, res) => {
       filepath,
       receivedAt: new Date().toISOString(),
     };
-    
+
     const metadataFilename = `screenshot-${statusPrefix}-${workflowId}-${blockId}-${dateStr}-${timeStr}.json`;
     const metadataFilepath = path.join(imagesDir, metadataFilename);
     fs.writeFileSync(metadataFilepath, JSON.stringify(metadata, null, 2));
-    
+
     console.log('📸 [Backend] Screenshot saved:', {
       workflowId,
       blockId,
@@ -782,9 +2232,9 @@ app.post('/api/screenshot', (req, res) => {
       status: status || 'error',
       filename,
       filepath,
-      errorMessage: errorMessage?.substring(0, 50) + '...'
+      errorMessage: errorMessage?.substring(0, 50) + '...',
     });
-    
+
     res.json({
       success: true,
       message: 'Screenshot saved successfully',
@@ -804,55 +2254,55 @@ app.post('/api/screenshot', (req, res) => {
 
 // Receive screenshot-step from extension
 app.post('/api/screenshot-step', (req, res) => {
-  const { 
-    screenshot, 
-    blockId, 
-    blockLabel, 
-    tabUrl, 
-    tabTitle, 
-    timestamp, 
-    workflowId, 
-    description, 
+  const {
+    screenshot,
+    blockId,
+    blockLabel,
+    tabUrl,
+    tabTitle,
+    timestamp,
+    workflowId,
+    description,
     screenshotType,
     elementHTML,
     pageHTML,
-    htmlContent
+    htmlContent,
   } = req.body;
-  
+
   if (!workflowId) {
     return res.status(400).json({ error: 'workflowId is required' });
   }
-  
+
   try {
     const date = new Date(timestamp);
     const dateStr = date.toISOString().split('T')[0];
     const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-');
-    
+
     let filename = '';
     let filepath = '';
-    
+
     // Handle screenshot if provided
     if (screenshot && screenshotType !== 'html') {
       // Extract base64 data from data URL
       const base64Data = screenshot.replace(/^data:image\/[a-z]+;base64,/, '');
-      
+
       // Generate filename with timestamp
       filename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.jpg`;
       filepath = path.join(imagesDir, filename);
-      
+
       // Write image file
       fs.writeFileSync(filepath, base64Data, 'base64');
     }
-    
+
     // Handle HTML content if provided
     if (htmlContent || elementHTML || pageHTML) {
       const htmlFilename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.txt`;
       const htmlFilepath = path.join(imagesDir, htmlFilename);
-      
+
       // Use htmlContent if available, otherwise fallback to elementHTML or pageHTML
       const contentToSave = htmlContent || elementHTML || pageHTML || '';
       fs.writeFileSync(htmlFilepath, contentToSave, 'utf8');
-      
+
       // Update filename to include HTML file
       if (filename) {
         filename += `, ${htmlFilename}`;
@@ -860,7 +2310,7 @@ app.post('/api/screenshot-step', (req, res) => {
         filename = htmlFilename;
       }
     }
-    
+
     // Create metadata file
     const metadata = {
       workflowId,
@@ -878,11 +2328,11 @@ app.post('/api/screenshot-step', (req, res) => {
       hasHTML: !!(htmlContent || elementHTML || pageHTML),
       receivedAt: new Date().toISOString(),
     };
-    
+
     const metadataFilename = `step-${workflowId}-${blockId}-${dateStr}-${timeStr}.json`;
     const metadataFilepath = path.join(imagesDir, metadataFilename);
     fs.writeFileSync(metadataFilepath, JSON.stringify(metadata, null, 2));
-    
+
     console.log('📸 [Backend] Step data saved:', {
       workflowId,
       blockId,
@@ -890,9 +2340,9 @@ app.post('/api/screenshot-step', (req, res) => {
       filename,
       hasScreenshot: !!(screenshot && screenshotType !== 'html'),
       hasHTML: !!(htmlContent || elementHTML || pageHTML),
-      tabTitle: tabTitle?.substring(0, 30) + '...'
+      tabTitle: tabTitle?.substring(0, 30) + '...',
     });
-    
+
     res.json({
       success: true,
       message: 'Step data saved successfully',
@@ -901,7 +2351,7 @@ app.post('/api/screenshot-step', (req, res) => {
       workflowId,
       blockId,
       hasScreenshot: !!(screenshot && screenshotType !== 'html'),
-      hasHTML: !!(htmlContent || elementHTML || pageHTML)
+      hasHTML: !!(htmlContent || elementHTML || pageHTML),
     });
   } catch (error) {
     console.error('❌ [Backend] Error saving step data:', error);
@@ -919,8 +2369,8 @@ app.post('/api/screenshot-step', (req, res) => {
 
 // In-memory data stores
 const mockUsers = new Map();
-const mockWorkflows = new Map();  // id -> ActionWorkflowResponse format
-const mockVersions = new Map();   // workflowId -> [version, ...]
+const mockWorkflows = new Map(); // id -> ActionWorkflowResponse format
+const mockVersions = new Map(); // workflowId -> [version, ...]
 const mockFolders = new Map();
 const mockPackages = new Map();
 const mockSessions = new Map();
@@ -964,7 +2414,9 @@ function toWorkflowResponse(wf) {
 function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Unauthorized - No token provided' });
+    return res
+      .status(401)
+      .json({ message: 'Unauthorized - No token provided' });
   }
 
   const token = authHeader.split(' ')[1];
@@ -1203,7 +2655,9 @@ app.post('/api/v1/control/workflows/list', authMiddleware, (req, res) => {
   const allWorkflows = Array.from(mockWorkflows.values());
   const paginated = allWorkflows.slice(skip, skip + limit);
 
-  console.log(`📋 [Workflows] LIST - returning ${paginated.length}/${allWorkflows.length}`);
+  console.log(
+    `📋 [Workflows] LIST - returning ${paginated.length}/${allWorkflows.length}`
+  );
   res.json({
     data: paginated.map(toWorkflowResponse),
     pagination: {
@@ -1270,10 +2724,14 @@ app.patch('/api/v1/control/workflows/:id', authMiddleware, (req, res) => {
   const now = nowISO();
 
   if (workflow_config) {
-    existing.workflow_config = { ...existing.workflow_config, ...workflow_config };
+    existing.workflow_config = {
+      ...existing.workflow_config,
+      ...workflow_config,
+    };
     // Sync top-level fields from config if provided
     if (workflow_config.name) existing.name = workflow_config.name;
-    if (workflow_config.description !== undefined) existing.description = workflow_config.description;
+    if (workflow_config.description !== undefined)
+      existing.description = workflow_config.description;
   }
   existing.updated_at = now;
   existing.version = (existing.version || 1) + 1;
@@ -1291,7 +2749,9 @@ app.patch('/api/v1/control/workflows/:id', authMiddleware, (req, res) => {
   mockVersions.set(req.params.id, versions);
 
   mockWorkflows.set(req.params.id, existing);
-  console.log(`✏️  [Workflows] PATCH ${req.params.id} v${existing.version} - "${existing.name}"`);
+  console.log(
+    `✏️  [Workflows] PATCH ${req.params.id} v${existing.version} - "${existing.name}"`
+  );
   res.json({ data: toWorkflowResponse(existing) });
 });
 
@@ -1309,90 +2769,112 @@ app.delete('/api/v1/control/workflows/:id', authMiddleware, (req, res) => {
 });
 
 // POST /api/v1/control/workflows/:id/approve — Approve workflow
-app.post('/api/v1/control/workflows/:id/approve', authMiddleware, (req, res) => {
-  const wf = mockWorkflows.get(req.params.id);
-  if (!wf) {
-    return res.status(404).json({ message: 'Workflow not found' });
-  }
-  if (wf.status !== 'draft') {
-    return res.status(400).json({ message: `Cannot approve workflow in "${wf.status}" status` });
-  }
+app.post(
+  '/api/v1/control/workflows/:id/approve',
+  authMiddleware,
+  (req, res) => {
+    const wf = mockWorkflows.get(req.params.id);
+    if (!wf) {
+      return res.status(404).json({ message: 'Workflow not found' });
+    }
+    if (wf.status !== 'draft') {
+      return res
+        .status(400)
+        .json({ message: `Cannot approve workflow in "${wf.status}" status` });
+    }
 
-  wf.status = 'approved';
-  wf.updated_at = nowISO();
-  mockWorkflows.set(req.params.id, wf);
+    wf.status = 'approved';
+    wf.updated_at = nowISO();
+    mockWorkflows.set(req.params.id, wf);
 
-  console.log(`✅ [Workflows] APPROVE ${req.params.id} - "${wf.name}"`);
-  res.json({ data: toWorkflowResponse(wf) });
-});
+    console.log(`✅ [Workflows] APPROVE ${req.params.id} - "${wf.name}"`);
+    res.json({ data: toWorkflowResponse(wf) });
+  }
+);
 
 // POST /api/v1/control/workflows/:id/deprecate — Deprecate workflow
-app.post('/api/v1/control/workflows/:id/deprecate', authMiddleware, (req, res) => {
-  const wf = mockWorkflows.get(req.params.id);
-  if (!wf) {
-    return res.status(404).json({ message: 'Workflow not found' });
+app.post(
+  '/api/v1/control/workflows/:id/deprecate',
+  authMiddleware,
+  (req, res) => {
+    const wf = mockWorkflows.get(req.params.id);
+    if (!wf) {
+      return res.status(404).json({ message: 'Workflow not found' });
+    }
+
+    wf.status = 'deprecated';
+    wf.updated_at = nowISO();
+    mockWorkflows.set(req.params.id, wf);
+
+    console.log(`⚠️  [Workflows] DEPRECATE ${req.params.id} - "${wf.name}"`);
+    res.json({ data: toWorkflowResponse(wf) });
   }
-
-  wf.status = 'deprecated';
-  wf.updated_at = nowISO();
-  mockWorkflows.set(req.params.id, wf);
-
-  console.log(`⚠️  [Workflows] DEPRECATE ${req.params.id} - "${wf.name}"`);
-  res.json({ data: toWorkflowResponse(wf) });
-});
+);
 
 // GET /api/v1/control/workflows/:id/versions — Get version history
-app.get('/api/v1/control/workflows/:id/versions', authMiddleware, (req, res) => {
-  const wf = mockWorkflows.get(req.params.id);
-  if (!wf) {
-    return res.status(404).json({ message: 'Workflow not found' });
-  }
+app.get(
+  '/api/v1/control/workflows/:id/versions',
+  authMiddleware,
+  (req, res) => {
+    const wf = mockWorkflows.get(req.params.id);
+    if (!wf) {
+      return res.status(404).json({ message: 'Workflow not found' });
+    }
 
-  const versions = mockVersions.get(req.params.id) || [];
-  console.log(`📜 [Workflows] VERSIONS ${req.params.id} - ${versions.length} versions`);
-  res.json({ data: versions });
-});
+    const versions = mockVersions.get(req.params.id) || [];
+    console.log(
+      `📜 [Workflows] VERSIONS ${req.params.id} - ${versions.length} versions`
+    );
+    res.json({ data: versions });
+  }
+);
 
 // POST /api/v1/control/workflows/:id/rollback — Rollback to version
-app.post('/api/v1/control/workflows/:id/rollback', authMiddleware, (req, res) => {
-  const wf = mockWorkflows.get(req.params.id);
-  if (!wf) {
-    return res.status(404).json({ message: 'Workflow not found' });
+app.post(
+  '/api/v1/control/workflows/:id/rollback',
+  authMiddleware,
+  (req, res) => {
+    const wf = mockWorkflows.get(req.params.id);
+    if (!wf) {
+      return res.status(404).json({ message: 'Workflow not found' });
+    }
+
+    const { target_version_id, reason } = req.body;
+    const versions = mockVersions.get(req.params.id) || [];
+    const targetVersion = versions.find((v) => v.id === target_version_id);
+
+    if (!targetVersion) {
+      return res.status(404).json({ message: 'Target version not found' });
+    }
+
+    const now = nowISO();
+    wf.version = (wf.version || 1) + 1;
+    wf.updated_at = now;
+
+    // Record rollback as a new version
+    versions.push({
+      id: `ver-${req.params.id}-${wf.version}`,
+      workflow_id: req.params.id,
+      version: wf.version,
+      changelog: `Rollback to v${targetVersion.version}: ${reason || ''}`,
+      update_type: 'rollback',
+      created_at: now,
+    });
+    mockVersions.set(req.params.id, versions);
+    mockWorkflows.set(req.params.id, wf);
+
+    console.log(
+      `⏪ [Workflows] ROLLBACK ${req.params.id} to ${target_version_id} - "${wf.name}"`
+    );
+    res.json({
+      data: {
+        workflow: toWorkflowResponse(wf),
+        rolled_back_to_version: targetVersion.version,
+        new_version: wf.version,
+      },
+    });
   }
-
-  const { target_version_id, reason } = req.body;
-  const versions = mockVersions.get(req.params.id) || [];
-  const targetVersion = versions.find((v) => v.id === target_version_id);
-
-  if (!targetVersion) {
-    return res.status(404).json({ message: 'Target version not found' });
-  }
-
-  const now = nowISO();
-  wf.version = (wf.version || 1) + 1;
-  wf.updated_at = now;
-
-  // Record rollback as a new version
-  versions.push({
-    id: `ver-${req.params.id}-${wf.version}`,
-    workflow_id: req.params.id,
-    version: wf.version,
-    changelog: `Rollback to v${targetVersion.version}: ${reason || ''}`,
-    update_type: 'rollback',
-    created_at: now,
-  });
-  mockVersions.set(req.params.id, versions);
-  mockWorkflows.set(req.params.id, wf);
-
-  console.log(`⏪ [Workflows] ROLLBACK ${req.params.id} to ${target_version_id} - "${wf.name}"`);
-  res.json({
-    data: {
-      workflow: toWorkflowResponse(wf),
-      rolled_back_to_version: targetVersion.version,
-      new_version: wf.version,
-    },
-  });
-});
+);
 
 // ── Folder CRUD Endpoints (/folders) ─────────────────────────
 // Matches: src/utils/folderApi.js
@@ -1486,10 +2968,12 @@ app.delete('/packages/:id', authMiddleware, (req, res) => {
 setInterval(() => {
   connectedExtensions.forEach((extension, extensionId) => {
     if (extension.ws.readyState === WebSocket.OPEN) {
-      extension.ws.send(JSON.stringify({
-        command: 'ping',
-        requestId: uuidv4(),
-      }));
+      extension.ws.send(
+        JSON.stringify({
+          command: 'ping',
+          requestId: uuidv4(),
+        })
+      );
     } else {
       connectedExtensions.delete(extensionId);
       console.log(`🗑️  Removed dead connection: ${extensionId}`);
@@ -1500,8 +2984,9 @@ setInterval(() => {
 // Clean up old execution history (keep last 1000)
 setInterval(() => {
   if (executionHistory.size > 1000) {
-    const entries = Array.from(executionHistory.entries())
-      .sort((a, b) => (b[1].requestedAt || 0) - (a[1].requestedAt || 0));
+    const entries = Array.from(executionHistory.entries()).sort(
+      (a, b) => (b[1].requestedAt || 0) - (a[1].requestedAt || 0)
+    );
 
     const toKeep = entries.slice(0, 1000);
     executionHistory.clear();
@@ -1515,48 +3000,113 @@ setInterval(() => {
 // START SERVER
 // ═══════════════════════════════════════════════════════════
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
+  const bootstrapConfig = buildBootstrapConfig();
+  const bootstrapUrl = `http://localhost:${PORT}/automa-init?profile_id=${encodeURIComponent(
+    bootstrapConfig.profileId
+  )}&ws_url=${encodeURIComponent(
+    bootstrapConfig.wsUrl
+  )}&internal_api_port=${encodeURIComponent(bootstrapConfig.internalApiPort)}${
+    bootstrapConfig.internalApiSecret
+      ? `&internal_api_secret=${encodeURIComponent(
+          bootstrapConfig.internalApiSecret
+        )}`
+      : ''
+  }`;
+  const addresses = getServerAddresses(PORT);
+
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║   Automa Backend Test Server                              ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
   console.log('');
   console.log(`🚀 HTTP Server:     http://localhost:${PORT}`);
-  console.log(`🔌 WebSocket:       ws://localhost:${PORT}`);
-  console.log(`🔑 WS Auth:         JWT via identify message (accepts ?profile_id= param)`);
+  console.log(`🔌 WebSocket:       ws://localhost:${PORT}/ws`);
+  console.log(`🔑 WS Token:        ${AUTH_TOKEN}`);
+  console.log(`🧪 Init URL:        ${bootstrapUrl}`);
+  console.log(`🧷 Internal API:    http://localhost:${INTERNAL_API_PORT}`);
+  console.log(`🔐 Internal Secret: ${INTERNAL_API_SECRET || '(empty)'}`);
+  console.log('');
+  console.log('🌐 Reachable Addresses:');
+  addresses.forEach((address) => console.log(`   ${address}`));
   console.log('');
   console.log('🔐 IAM Auth (/api/v1/iam):');
-  console.log(`   POST /api/v1/iam/auth/login/password   - Login (test@automa.dev / 123456)`);
-  console.log(`   POST /api/v1/iam/auth/rotate           - Rotate token (body: { refresh_token })`);
+  console.log(
+    `   POST /api/v1/iam/auth/login/password   - Login (test@automa.dev / 123456)`
+  );
+  console.log(
+    `   POST /api/v1/iam/auth/rotate           - Rotate token (body: { refresh_token })`
+  );
   console.log(`   POST /api/v1/iam/auth/logout           - Logout`);
   console.log('');
   console.log('📋 Workflows (/api/v1/control/workflows):');
-  console.log(`   POST   .../workflows/list              - List (body: { skip, limit })`);
+  console.log(
+    `   POST   .../workflows/list              - List (body: { skip, limit })`
+  );
   console.log(`   GET    .../workflows/:id               - Get by ID`);
   console.log(`   POST   .../workflows                   - Create`);
   console.log(`   PATCH  .../workflows/:id               - Update config`);
   console.log(`   DELETE .../workflows/:id               - Delete`);
-  console.log(`   POST   .../workflows/:id/approve       - Approve (draft -> approved)`);
+  console.log(
+    `   POST   .../workflows/:id/approve       - Approve (draft -> approved)`
+  );
   console.log(`   POST   .../workflows/:id/deprecate     - Deprecate`);
   console.log(`   GET    .../workflows/:id/versions      - Version history`);
-  console.log(`   POST   .../workflows/:id/rollback      - Rollback to version`);
+  console.log(
+    `   POST   .../workflows/:id/rollback      - Rollback to version`
+  );
   console.log('');
   console.log('📁 Folders:');
-  console.log(`   GET /folders  |  POST /folders  |  PUT /folders/:id  |  DELETE /folders/:id`);
+  console.log(
+    `   GET /folders  |  POST /folders  |  PUT /folders/:id  |  DELETE /folders/:id`
+  );
   console.log('');
   console.log('📦 Packages:');
-  console.log(`   GET /packages |  POST /packages |  PUT /packages/:id |  DELETE /packages/:id`);
+  console.log(
+    `   GET /packages |  POST /packages |  PUT /packages/:id |  DELETE /packages/:id`
+  );
   console.log('');
-  console.log('📡 Worker Engine (backendApi via WS base URL):');
-  console.log(`   GET  /health                           - Health / test connection`);
-  console.log(`   POST /api/workflow-log                 - Workflow execution log`);
+  console.log('📡 Worker-Compatible HTTP APIs:');
+  console.log(
+    `   GET  /health                           - Health / test connection`
+  );
+  console.log(
+    `   GET  /healthz                          - Internal API health`
+  );
+  console.log(
+    `   GET  /automa-init                      - Worker bootstrap tab`
+  );
+  console.log(`   GET  /api/bootstrap                    - Bootstrap JSON`);
+  console.log(`   POST /action-log                       - Worker action log`);
+  console.log(
+    `   POST /workflow-log                     - Worker workflow log`
+  );
+  console.log(
+    `   POST /artifact-log                     - Worker artifact log`
+  );
+  console.log(
+    `   POST /finish-job                       - Worker finish-job callback`
+  );
+  console.log(
+    `   POST /api/workflow-log                 - Workflow execution log`
+  );
   console.log(`   POST /api/screenshot                   - Screenshot upload`);
-  console.log(`   POST /api/screenshot-step              - Step screenshot upload`);
+  console.log(
+    `   POST /api/screenshot-step              - Step screenshot upload`
+  );
   console.log('');
   console.log('📡 WebSocket Control:');
-  console.log(`   GET  /api/extensions                   - Connected extensions`);
-  console.log(`   POST /api/execute                      - Execute workflow on extension`);
-  console.log(`   POST /api/execute-all                  - Execute on all extensions`);
-  console.log(`   POST /api/stop/:executionId            - Stop workflow execution`);
+  console.log(
+    `   GET  /api/extensions                   - Connected extensions`
+  );
+  console.log(
+    `   POST /api/execute                      - Execute workflow on extension`
+  );
+  console.log(
+    `   POST /api/execute-all                  - Execute on all extensions`
+  );
+  console.log(
+    `   POST /api/stop/:executionId            - Stop workflow execution`
+  );
   console.log(`   GET  /api/executions                   - Execution history`);
   console.log(`   GET  /api/executions/:id               - Specific execution`);
   console.log('');
@@ -1565,19 +3115,31 @@ server.listen(PORT, () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('🛑 SIGTERM signal received: closing server');
+async function shutdown(signal) {
+  console.log(`\n🛑 ${signal} signal received: closing server`);
+
+  await Promise.all(
+    Array.from(browserSessions.keys()).map((profileId) =>
+      closeBrowserSession(profileId)
+    )
+  );
+
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => {
+  shutdown('SIGTERM').catch((error) => {
+    console.error('❌ Shutdown error:', error);
+    process.exit(1);
   });
 });
 
 process.on('SIGINT', () => {
-  console.log('\n🛑 SIGINT signal received: closing server');
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
+  shutdown('SIGINT').catch((error) => {
+    console.error('❌ Shutdown error:', error);
+    process.exit(1);
   });
 });
-

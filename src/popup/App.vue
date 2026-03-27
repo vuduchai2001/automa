@@ -13,6 +13,7 @@ import { useWorkflowStore } from '@/stores/workflow';
 import { useHostedWorkflowStore } from '@/stores/hostedWorkflow';
 import { loadLocaleMessages, setI18nLanguage } from '@/lib/vueI18n';
 import { isAuthenticated } from '@/utils/auth';
+import { authTrace } from '@/utils/authTrace';
 
 const store = useStore();
 const workflowStore = useWorkflowStore();
@@ -32,7 +33,9 @@ onMounted(async () => {
   try {
     // Check auth first — redirect to dashboard login if not authenticated
     const authed = await isAuthenticated();
+    authTrace('popup:auth-check', { authed });
     if (!authed) {
+      authTrace('popup:redirect-login');
       sendMessage('open:dashboard', '/login', 'background');
       window.close();
       return;

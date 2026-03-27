@@ -623,7 +623,7 @@ const updateBlockData = debounce((data) => {
   state.dataChanged = true;
 }, 250);
 const updateHostedWorkflow = throttle(async () => {
-  return; // Hosted/backup features disabled
+  // Hosted/backup features disabled
 }, 5000);
 const onEdgesChange = debounce((changes) => {
   changes.forEach(({ type, item }) => {
@@ -1488,7 +1488,7 @@ function checkWorkflowPermission() {
   });
 }
 function checkWorkflowUpdate() {
-  return; // Team workflow feature disabled
+  // Team workflow feature disabled
 }
 /* eslint-disable consistent-return */
 function onBeforeLeave() {

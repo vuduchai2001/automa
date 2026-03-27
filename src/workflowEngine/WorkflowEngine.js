@@ -128,9 +128,6 @@ class WorkflowEngine {
         return;
       }
 
-      // eslint-disable-next-line no-console
-      console.log('before execute', this.states, '\n', this.workflow);
-
       const { nodes, edges } = this.workflow.drawflow;
       if (!nodes || nodes.length === 0) {
         console.error(`${this.workflow.name} doesn't have blocks`);
@@ -297,21 +294,29 @@ class WorkflowEngine {
       this.states.on('stop', this.onWorkflowStopped);
       this.states.on('resume', this.onResumeExecution);
 
-      const credentials = await dbStorage.credentials.toArray();
-      credentials.forEach(({ name, value }) => {
-        this.referenceData.secrets[name] = value;
-      });
+      try {
+        const credentials = await dbStorage.credentials.toArray();
+        credentials.forEach(({ name, value }) => {
+          this.referenceData.secrets[name] = value;
+        });
 
-      const variables = await dbStorage.variables.toArray();
-      variables.forEach(({ name, value }) => {
-        this.referenceData.variables[`$$${name}`] = value;
-      });
+        const variables = await dbStorage.variables.toArray();
+        variables.forEach(({ name, value }) => {
+          this.referenceData.variables[`$$${name}`] = value;
+        });
+      } catch (error) {
+        console.warn(
+          '[WorkflowEngine] Failed to load credentials/variables from storage:',
+          error
+        );
+      }
 
       this.addRefDataSnapshot('variables');
 
       await this.states.add(this.id, {
         id: this.id,
         status: 'running',
+        startedAt: this.startedTimestamp,
         state: this.state,
         workflowId: this.workflow.id,
         parentState: this.parentWorkflow,
@@ -341,6 +346,136 @@ class WorkflowEngine {
     this.workers.set(worker.id, worker);
   }
 
+  shouldPersistLogContext(detail) {
+    return (
+      detail.name !== 'delay' ||
+      detail.replacedValue ||
+      detail.name === 'javascript-code' ||
+      (blocks[detail.name]?.refDataKeys && this.saveLog)
+    );
+  }
+
+  persistLogContext(detail) {
+    const { variables, loopData } = this.refDataSnapshotsKeys;
+
+    this.historyCtxData[this.logHistoryId] = {
+      referenceData: {
+        loopData: loopData.key,
+        variables: variables.key,
+        activeTabUrl: detail.activeTabUrl,
+        prevBlockData: detail.prevBlockData || '',
+      },
+      replacedValue: cloneDeep(detail.replacedValue),
+      ...(detail?.ctxData || {}),
+    };
+
+    delete detail.replacedValue;
+  }
+
+  static buildActionLogPayload(detail, contextData = null) {
+    return {
+      logLevel: detail.type === 'error' ? 'error' : 'info',
+      logType: 'general',
+      message: `Block ${detail.name} ${detail.type || 'executed'}`,
+      logData: {
+        blockId: detail.blockId,
+        blockName: detail.name,
+        blockLabel: detail.label,
+        duration: detail.duration,
+        detail: cloneDeep(detail),
+        contextData: contextData ? cloneDeep(contextData) : null,
+      },
+    };
+  }
+
+  sendActionLog(detail) {
+    if (!this.options?.workerContext) return;
+    const contextData = detail?.id ? this.historyCtxData?.[detail.id] : null;
+
+    WorkerApiClient.sendActionLog(
+      this.options.workerContext,
+      WorkflowEngine.buildActionLogPayload(detail, contextData)
+    ).catch(() => {});
+  }
+
+  buildWorkflowLogPayload(status, message, endedTimestamp) {
+    const startedAt = new Date(this.startedTimestamp).toISOString();
+    const endedAt = new Date(endedTimestamp).toISOString();
+    const logs = cloneDeep(this.history);
+    const ctxData = cloneDeep(this.historyCtxData);
+    const tableData = cloneDeep(this.referenceData.table);
+    const variables = cloneDeep(this.referenceData.variables);
+    const globalData = cloneDeep(this.referenceData.globalData);
+    const columns = cloneDeep(this.columns);
+    const duration = endedTimestamp - this.startedTimestamp;
+
+    return {
+      workflowId: this.workflow.id,
+      status,
+      timestamp: endedTimestamp,
+      tableData,
+      variables,
+      globalData,
+      workflowRefData: {
+        workflowName: this.workflow.name,
+        nodesCount: this.workflow.drawflow?.nodes?.length || 0,
+        message: message || '',
+        startedAt,
+        endedAt,
+        duration,
+        logs,
+        ctxData,
+        tableData,
+        variables,
+        globalData,
+        columns,
+      },
+    };
+  }
+
+  async reportWorkflowCompletion(status, message, endedTimestamp) {
+    if (this.workflow.settings?.debugMode) return;
+
+    const logData = this.buildWorkflowLogPayload(
+      status,
+      message,
+      endedTimestamp
+    );
+
+    backendApi.sendWorkflowLog(logData).catch((err) => {
+      console.error('[WorkflowEngine] Failed to report log:', err);
+    });
+
+    if (!this.options?.workerContext) return;
+
+    const { workerContext } = this.options;
+
+    await Promise.allSettled([
+      WorkerApiClient.sendWorkflowLog(workerContext, {
+        logLevel: status === 'error' ? 'error' : 'info',
+        logType: 'workflow',
+        message: message || `Workflow ${status}`,
+        logData: {
+          workflowId: this.workflow.id,
+          workflowName: this.workflow.name,
+          status,
+          startedAt: logData.workflowRefData.startedAt,
+          endedAt: logData.workflowRefData.endedAt,
+          duration: logData.workflowRefData.duration,
+          nodesCount: logData.workflowRefData.nodesCount,
+          logs: logData.workflowRefData.logs,
+          ctxData: logData.workflowRefData.ctxData,
+          table: logData.tableData,
+          columns: logData.workflowRefData.columns,
+          variables: logData.variables,
+          globalData: logData.globalData,
+          workflowRefData: logData.workflowRefData,
+        },
+      }),
+      WorkerApiClient.sendFinishJob(workerContext),
+    ]);
+  }
+
   addLogHistory(detail) {
     if (detail.name === 'blocks-group') return;
 
@@ -352,45 +487,12 @@ class WorkflowEngine {
     this.logHistoryId += 1;
     detail.id = this.logHistoryId;
 
-    if (
-      detail.name !== 'delay' ||
-      detail.replacedValue ||
-      detail.name === 'javascript-code' ||
-      (blocks[detail.name]?.refDataKeys && this.saveLog)
-    ) {
-      const { variables, loopData } = this.refDataSnapshotsKeys;
-
-      this.historyCtxData[this.logHistoryId] = {
-        referenceData: {
-          loopData: loopData.key,
-          variables: variables.key,
-          activeTabUrl: detail.activeTabUrl,
-          prevBlockData: detail.prevBlockData || '',
-        },
-        replacedValue: cloneDeep(detail.replacedValue),
-        ...(detail?.ctxData || {}),
-      };
-
-      delete detail.replacedValue;
+    if (this.shouldPersistLogContext(detail)) {
+      this.persistLogContext(detail);
     }
 
     this.history.push(detail);
-
-    // Send action-log to worker internal API (worker-triggered mode only)
-    console.log('start send action log', detail, '\n', this.options);
-    if (this.options?.workerContext) {
-      WorkerApiClient.sendActionLog(this.options.workerContext, {
-        logLevel: detail.type === 'error' ? 'error' : 'info',
-        logType: 'general',
-        message: `Block ${detail.name} ${detail.type || 'executed'}`,
-        logData: {
-          blockId: detail.blockId,
-          blockName: detail.name,
-          blockLabel: detail.label,
-          duration: detail.duration,
-        },
-      }).catch(() => {});
-    }
+    this.sendActionLog(detail);
   }
 
   async stop() {
@@ -422,7 +524,7 @@ class WorkflowEngine {
 
     workflowQueue.splice(queueIndex, 1);
 
-    await BrowserAPIService.storage.localSet({ workflowQueue });
+    await BrowserAPIService.storage.local.set({ workflowQueue });
   }
 
   async destroyWorker(workerId) {
@@ -490,48 +592,7 @@ class WorkflowEngine {
       this.states.off('stop', this.onWorkflowStopped);
       await this.states.delete(this.id);
 
-      if (!this.workflow.settings?.debugMode) {
-        const { user } = (await BrowserAPIService.storage.local.get(
-          'user'
-        )) || { user: null };
-
-        // Send workflow execution log to backend
-        const logData = {
-          workflowId: this.workflow.id,
-          status,
-          timestamp: endedTimestamp,
-          workflowRefData: {
-            workflowName: this.workflow.name,
-            nodesCount: this.workflow.drawflow?.nodes?.length || 0,
-            message: message || '',
-            startedAt: new Date(this.startedTimestamp).toISOString(),
-            endedAt: new Date(endedTimestamp).toISOString(),
-          },
-        };
-        // backendApi.sendWorkflowLog(logData).catch((err) => {
-        //   console.error('[WorkflowEngine] Failed to report log:', err);
-        // });
-
-        // Send workflow-log + finish-job to worker internal API
-        if (this.options?.workerContext) {
-          const { workerContext } = this.options;
-
-          WorkerApiClient.sendWorkflowLog(workerContext, {
-            logLevel: status === 'error' ? 'error' : 'info',
-            logType: 'workflow',
-            message: message || `Workflow ${status}`,
-            logData: {
-              workflowId: this.workflow.id,
-              workflowName: this.workflow.name,
-              status,
-              startedAt: new Date(this.startedTimestamp).toISOString(),
-              endedAt: new Date(endedTimestamp).toISOString(),
-            },
-          }).catch(() => {});
-
-          WorkerApiClient.sendFinishJob(workerContext).catch(() => {});
-        }
-      }
+      await this.reportWorkflowCompletion(status, message, endedTimestamp);
 
       this.dispatchEvent('destroyed', {
         status,
@@ -554,7 +615,7 @@ class WorkflowEngine {
           },
         };
 
-        BrowserAPIService.storage.localSet(workflowState);
+        BrowserAPIService.storage.local.set(workflowState);
       } else if (status === 'success') {
         clearCache(this.workflow);
       }

@@ -1,258 +1,212 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Enable WebSocket - Automa Extension</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      max-width: 600px;
-      margin: 50px auto;
-      padding: 20px;
-      background: #f5f5f5;
-    }
-    .container {
-      background: white;
-      padding: 30px;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    h1 {
-      color: #333;
-      margin-bottom: 20px;
-    }
-    .form-group {
-      margin-bottom: 15px;
-    }
-    label {
-      display: block;
-      margin-bottom: 5px;
-      font-weight: 600;
-      color: #666;
-    }
-    input {
-      width: 100%;
-      padding: 10px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      font-size: 14px;
-    }
-    button {
-      background: #3B82F6;
-      color: white;
-      border: none;
-      padding: 12px 24px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 600;
-      margin-right: 10px;
-    }
-    button:hover {
-      background: #2563EB;
-    }
-    button.secondary {
-      background: #6B7280;
-    }
-    button.secondary:hover {
-      background: #4B5563;
-    }
-    button.success {
-      background: #10B981;
-    }
-    button.danger {
-      background: #EF4444;
-    }
-    .status {
-      margin-top: 20px;
-      padding: 15px;
-      border-radius: 4px;
-      display: none;
-    }
-    .status.success {
-      background: #D1FAE5;
-      color: #065F46;
-      display: block;
-    }
-    .status.error {
-      background: #FEE2E2;
-      color: #991B1B;
-      display: block;
-    }
-    .status.info {
-      background: #DBEAFE;
-      color: #1E3A8A;
-      display: block;
-    }
-    code {
-      background: #f5f5f5;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-family: monospace;
-    }
-    .instructions {
-      margin-top: 30px;
-      padding: 15px;
-      background: #FEF3C7;
-      border-left: 4px solid #F59E0B;
-      border-radius: 4px;
-    }
-    .instructions h3 {
-      margin-top: 0;
-      color: #92400E;
-    }
-    .instructions p {
-      color: #78350F;
-      margin: 10px 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>🔌 Enable WebSocket Connection</h1>
-    <p>Configure Automa extension to connect to your WebSocket server.</p>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Automa Worker Bootstrap</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        max-width: 860px;
+        margin: 40px auto;
+        padding: 24px;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      .card {
+        background: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 14px;
+        padding: 24px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+      }
+      .row {
+        margin-bottom: 16px;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+        font-weight: 600;
+        color: #cbd5e1;
+      }
+      input {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        background: #020617;
+        color: #f8fafc;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      button,
+      a.button {
+        display: inline-block;
+        padding: 10px 16px;
+        border: none;
+        border-radius: 8px;
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+        text-decoration: none;
+        font-weight: 600;
+        margin-right: 10px;
+      }
+      button.secondary {
+        background: #475569;
+      }
+      .hint {
+        color: #94a3b8;
+        font-size: 14px;
+      }
+      code {
+        background: rgba(148, 163, 184, 0.12);
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      #status {
+        margin-top: 18px;
+        padding: 14px;
+        border-radius: 8px;
+        display: none;
+        white-space: pre-wrap;
+      }
+      #status.show {
+        display: block;
+      }
+      #status.info {
+        background: #172554;
+        color: #bfdbfe;
+      }
+      #status.success {
+        background: #052e16;
+        color: #bbf7d0;
+      }
+      #status.error {
+        background: #450a0a;
+        color: #fecaca;
+      }
+      ul {
+        line-height: 1.7;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Automa Worker Bootstrap</h1>
+      <p class="hint">
+        Use this page to generate the init-tab URL for the worker-driven,
+        no-login WebSocket flow.
+      </p>
 
-    <div class="form-group">
-      <label>WebSocket URL</label>
-      <input type="text" id="wsUrl" value="ws://localhost:8000" placeholder="ws://localhost:8000">
+      <div class="row">
+        <label for="serverBase">Backend Base URL</label>
+        <input id="serverBase" />
+      </div>
+
+      <div class="row">
+        <label for="profileId">profile_id</label>
+        <input id="profileId" value="profile-backend-test" />
+      </div>
+
+      <div class="row">
+        <label for="wsUrl">ws_url</label>
+        <input id="wsUrl" value="" />
+      </div>
+
+      <div class="row">
+        <label for="internalApiPort">internal_api_port</label>
+        <input id="internalApiPort" value="8000" />
+      </div>
+
+      <div class="row">
+        <label for="internalApiSecret">internal_api_secret</label>
+        <input id="internalApiSecret" value="" />
+      </div>
+
+      <div class="row">
+        <button onclick="buildInitUrl()">Build Init URL</button>
+        <a class="button secondary" href="#" target="_blank" rel="noopener"
+          >Open Dashboard</a
+        >
+      </div>
+
+      <div class="row">
+        <label for="initUrl">Init Tab URL</label>
+        <input id="initUrl" readonly />
+      </div>
+
+      <div id="status"></div>
+
+      <h3>How to use</h3>
+      <ul>
+        <li>
+          Start the test backend: <code>node backend-test/server.js</code>.
+        </li>
+        <li>
+          Open the generated <code>/automa-init</code> URL in the same browser
+          profile where the extension is installed.
+        </li>
+        <li>
+          Open the dashboard and wait for the extension to appear in the
+          connected list.
+        </li>
+        <li>
+          Execute a workflow from the dashboard. Full flow will include WS
+          command, action/workflow logs, artifacts, and finish-job callback.
+        </li>
+      </ul>
     </div>
 
-    <div class="form-group">
-      <label>Auth Token</label>
-      <input type="text" id="authToken" value="test-token-12345" placeholder="test-token-12345">
-    </div>
+    <script>
+      function setStatus(message, type) {
+        const el = document.getElementById('status');
+        el.className = `show ${type}`;
+        el.textContent = message;
+      }
 
-    <div style="margin-top: 20px;">
-      <button onclick="enableWebSocket()">Enable WebSocket</button>
-      <button class="secondary" onclick="checkStatus()">Check Status</button>
-      <button class="success" onclick="reconnect()">Reconnect</button>
-      <button class="danger" onclick="disableWebSocket()">Disable</button>
-    </div>
+      function buildInitUrl() {
+        try {
+          const serverBase =
+            document
+              .getElementById('serverBase')
+              .value.trim()
+              .replace(/\/$/, '') || window.location.origin;
+          const profileId = document.getElementById('profileId').value.trim();
+          const wsUrl = document.getElementById('wsUrl').value.trim();
+          const internalApiPort = document
+            .getElementById('internalApiPort')
+            .value.trim();
+          const internalApiSecret = document
+            .getElementById('internalApiSecret')
+            .value.trim();
 
-    <div id="status" class="status"></div>
+          const url = new URL(`${serverBase}/automa-init`);
+          if (profileId) url.searchParams.set('profile_id', profileId);
+          if (wsUrl) url.searchParams.set('ws_url', wsUrl);
+          if (internalApiPort)
+            url.searchParams.set('internal_api_port', internalApiPort);
+          if (internalApiSecret)
+            url.searchParams.set('internal_api_secret', internalApiSecret);
 
-    <div class="instructions">
-      <h3>⚠️ Important</h3>
-      <p><strong>1.</strong> Make sure WebSocket server is running: <code>node backend-test/server.js</code></p>
-      <p><strong>2.</strong> Open this page in the same browser where Automa extension is installed</p>
-      <p><strong>3.</strong> Check the dashboard at <a href="http://localhost:8000" target="_blank">http://localhost:8000</a> to see if extension is connected</p>
-    </div>
-  </div>
-
-  <script>
-    function showStatus(message, type = 'info') {
-      const statusEl = document.getElementById('status');
-      statusEl.textContent = message;
-      statusEl.className = `status ${type}`;
-    }
-
-    async function sendMessage(name, data) {
-      try {
-        if (typeof chrome === 'undefined' || !chrome.runtime) {
-          throw new Error('Chrome extension API not available. Make sure you are accessing this page from a browser with Automa extension installed.');
+          document.getElementById('initUrl').value = url.toString();
+          setStatus(
+            `Open this URL in the same browser profile as the extension:\n${url.toString()}`,
+            'success'
+          );
+        } catch (error) {
+          setStatus(`Failed to build init URL: ${error.message}`, 'error');
         }
-
-        const result = await chrome.runtime.sendMessage({
-          name: `background--${name}`,
-          data: data
-        });
-
-        return result;
-      } catch (error) {
-        console.error('Error:', error);
-        throw error;
-      }
-    }
-
-    async function enableWebSocket() {
-      const url = document.getElementById('wsUrl').value;
-      const authToken = document.getElementById('authToken').value;
-
-      if (!url) {
-        showStatus('❌ Please enter WebSocket URL', 'error');
-        return;
       }
 
-      try {
-        showStatus('⏳ Enabling WebSocket...', 'info');
-        
-        const result = await sendMessage('websocket:enable', {
-          url: url,
-          authToken: authToken
-        });
-
-        if (result.success) {
-          showStatus('✅ WebSocket enabled! Extension will now connect to ' + url, 'success');
-          
-          // Check status after 2 seconds
-          setTimeout(checkStatus, 2000);
-        } else {
-          showStatus('❌ Failed to enable WebSocket', 'error');
-        }
-      } catch (error) {
-        showStatus('❌ Error: ' + error.message, 'error');
-      }
-    }
-
-    async function disableWebSocket() {
-      try {
-        showStatus('⏳ Disabling WebSocket...', 'info');
-        
-        const result = await sendMessage('websocket:disable', {});
-
-        if (result.success) {
-          showStatus('✅ WebSocket disabled', 'success');
-        } else {
-          showStatus('❌ Failed to disable WebSocket', 'error');
-        }
-      } catch (error) {
-        showStatus('❌ Error: ' + error.message, 'error');
-      }
-    }
-
-    async function checkStatus() {
-      try {
-        showStatus('⏳ Checking status...', 'info');
-        
-        const status = await sendMessage('websocket:get-status', {});
-
-        if (status.connected) {
-          showStatus(`✅ Connected! (Reconnect attempts: ${status.reconnectAttempts || 0})`, 'success');
-        } else {
-          showStatus(`⚠️ Not connected. Reconnect attempts: ${status.reconnectAttempts || 0}`, 'error');
-        }
-      } catch (error) {
-        showStatus('❌ Error: ' + error.message, 'error');
-      }
-    }
-
-    async function reconnect() {
-      try {
-        showStatus('⏳ Reconnecting...', 'info');
-        
-        const result = await sendMessage('websocket:reconnect', {});
-
-        if (result.success) {
-          showStatus('✅ Reconnect initiated', 'success');
-          
-          // Check status after 2 seconds
-          setTimeout(checkStatus, 2000);
-        } else {
-          showStatus('❌ Failed to reconnect', 'error');
-        }
-      } catch (error) {
-        showStatus('❌ Error: ' + error.message, 'error');
-      }
-    }
-
-    // Auto-check status on page load
-    setTimeout(() => {
-      checkStatus().catch(() => {
-        showStatus('⚠️ Extension not detected. Make sure Automa extension is installed.', 'error');
-      });
-    }, 500);
-  </script>
-</body>
+      document.getElementById('serverBase').value = window.location.origin;
+      document.getElementById(
+        'wsUrl'
+      ).value = `ws://127.0.0.1:${window.location.port}/ws?token=test-token-12345`;
+      document.getElementById('internalApiPort').value = window.location.port;
+      document.querySelector('a.button.secondary').href =
+        window.location.origin;
+      buildInitUrl();
+    </script>
+  </body>
 </html>
-

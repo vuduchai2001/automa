@@ -58,8 +58,17 @@ pnpm dev
 # Compiles and minifies for production for the chrome browser
 pnpm build
 
+# Compiles and minifies the headless Chrome build
+pnpm build:headless
+
 # Create a zip file from the build folder
 pnpm build:zip
+
+# Create a zip file from the headless build folder
+pnpm build:zip:headless
+
+# Build and zip the headless Chrome artifact
+pnpm build:prod-headless
 
 # Compiles and hot-reloads for development for the firefox browser
 pnpm dev:firefox

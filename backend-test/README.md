@@ -27,37 +27,62 @@ Copy `.env.example` to `.env` and configure:
 ```env
 PORT=8000
 AUTH_TOKEN=test-token-12345
+INTERNAL_API_PORT=8000
+INTERNAL_API_SECRET=
 ```
 
-⚠️ **Important**: The `AUTH_TOKEN` must match the token configured in your browser extension.
+`AUTH_TOKEN` is appended to the worker-style WS URL. `INTERNAL_API_PORT` and `INTERNAL_API_SECRET` are injected into execution requests so the extension can call back `/action-log`, `/artifact-log`, `/workflow-log`, and `/finish-job`.
 
 ## Running the Server
 
 ### Development Mode (with auto-reload)
+
 ```bash
 npm run dev
 ```
 
 ### Production Mode
+
 ```bash
 npm start
 ```
 
 The server will start on `http://localhost:8000`
 
+For the no-login worker flow, open the bootstrap tab URL in the same browser profile where the extension is installed:
+
+```text
+http://localhost:8000/automa-init?profile_id=profile-backend-test&ws_url=ws://127.0.0.1:8000/ws?token=test-token-12345&internal_api_port=8000
+```
+
+The extension background reads the `automa-init` tab URL and bootstraps WS/internal API settings without going through the interactive login flow.
+
 ## API Endpoints
 
 ### Health Check
+
 ```bash
 GET /health
 ```
 
 ### List Connected Extensions
+
 ```bash
 GET /api/extensions
 ```
 
+### Browser Session Management
+
+```bash
+GET /api/browser-sessions
+POST /api/browser-sessions/launch
+POST /api/browser-sessions/:profileId/close
+```
+
+`/api/browser-sessions/launch` starts a Playwright persistent Chromium session, loads the built extension from `../build`, opens `/automa-init`, and waits for the extension WebSocket connection.
+
 ### Execute Workflow on Specific Extension
+
 ```bash
 POST /api/execute
 Content-Type: application/json
@@ -79,7 +104,23 @@ Content-Type: application/json
 }
 ```
 
+If `connectionId` / `profileId` is omitted, the backend can auto-launch a browser session first when `autoLaunchBrowser: true`.
+
+### Execute Smoke Workflow
+
+```bash
+POST /api/execute-smoke
+Content-Type: application/json
+
+{
+  "profileId": "pw-ui-session",
+  "autoLaunchBrowser": true,
+  "relaunchBrowser": false
+}
+```
+
 ### Execute Workflow on All Extensions
+
 ```bash
 POST /api/execute-all
 Content-Type: application/json
@@ -91,26 +132,31 @@ Content-Type: application/json
 ```
 
 ### Stop Workflow Execution
+
 ```bash
 POST /api/stop/:executionId
 ```
 
 ### Get Execution History
+
 ```bash
 GET /api/executions
 ```
 
 ### Get Specific Execution
+
 ```bash
 GET /api/executions/:executionId
 ```
 
 ### Get Extension Status
+
 ```bash
 POST /api/status/:extensionId
 ```
 
 ### Ping Extension
+
 ```bash
 POST /api/ping/:extensionId
 ```
@@ -118,11 +164,13 @@ POST /api/ping/:extensionId
 ## WebSocket Protocol
 
 ### Connection
-Connect to: `ws://localhost:8000?token=test-token-12345`
+
+Connect to: `ws://localhost:8000/ws?token=test-token-12345`
 
 ### Messages from Extension → Server
 
 **1. Identify**
+
 ```json
 {
   "type": "identify",
@@ -135,9 +183,10 @@ Connect to: `ws://localhost:8000?token=test-token-12345`
 ```
 
 **2. Workflow Started**
+
 ```json
 {
-  "type": "workflow_started",
+  "command": "workflow_started",
   "executionId": "uuid",
   "workflowId": "workflow-id",
   "timestamp": 1234567890
@@ -145,6 +194,7 @@ Connect to: `ws://localhost:8000?token=test-token-12345`
 ```
 
 **3. Workflow Completed**
+
 ```json
 {
   "type": "workflow_completed",
@@ -157,6 +207,7 @@ Connect to: `ws://localhost:8000?token=test-token-12345`
 ```
 
 **4. Workflow Failed**
+
 ```json
 {
   "type": "workflow_failed",
@@ -172,19 +223,28 @@ Connect to: `ws://localhost:8000?token=test-token-12345`
 ### Messages from Server → Extension
 
 **1. Execute Workflow**
+
 ```json
 {
-  "type": "execute_workflow",
-  "data": {
-    "executionId": "uuid",
-    "workflow": {...},
-    "inputs": {...},
-    "options": {...}
+  "command": "executeAction",
+  "request_id": "uuid",
+  "params": {
+    "action_id": "action-uuid",
+    "action_index": 0,
+    "workflow_id": "workflow-id",
+    "workflow_name": "Workflow Name",
+    "workflow_version": "1.0.0",
+    "workflow_config": {...},
+    "params": {...},
+    "options": {...},
+    "internal_api_port": 8000,
+    "internal_api_secret": null
   }
 }
 ```
 
 **2. Stop Workflow**
+
 ```json
 {
   "type": "stop_workflow",
@@ -195,24 +255,35 @@ Connect to: `ws://localhost:8000?token=test-token-12345`
 ```
 
 **3. Get Status**
+
 ```json
 {
-  "type": "get_status",
+  "command": "get_status",
   "requestId": "uuid"
 }
 ```
 
 **4. Ping**
+
 ```json
 {
-  "type": "ping",
+  "command": "ping",
   "requestId": "uuid"
 }
 ```
 
+### Worker Internal API Endpoints
+
+- `GET /healthz`
+- `POST /action-log`
+- `POST /workflow-log`
+- `POST /artifact-log`
+- `POST /finish-job`
+
 ## Testing with cURL
 
 ### Execute a simple workflow
+
 ```bash
 curl -X POST http://localhost:8000/api/execute \
   -H "Content-Type: application/json" \
@@ -238,11 +309,36 @@ curl -X POST http://localhost:8000/api/execute \
 ```
 
 ### Check connected extensions
+
 ```bash
 curl http://localhost:8000/api/extensions
 ```
 
+### Launch browser session
+
+```bash
+curl -X POST http://localhost:8000/api/browser-sessions/launch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profileId": "pw-ui-session",
+    "relaunch": true,
+    "waitForConnection": true
+  }'
+```
+
+### Run smoke workflow
+
+```bash
+curl -X POST http://localhost:8000/api/execute-smoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profileId": "pw-ui-session",
+    "autoLaunchBrowser": true
+  }'
+```
+
 ### Get execution history
+
 ```bash
 curl http://localhost:8000/api/executions
 ```
@@ -302,6 +398,7 @@ curl http://localhost:8000/api/executions
 ## Monitoring
 
 The server logs all activities including:
+
 - ✅ Connection/disconnection events
 - 📨 Incoming messages
 - 🚀 Workflow executions
@@ -311,16 +408,19 @@ The server logs all activities including:
 ## Troubleshooting
 
 ### Extension not connecting
+
 1. Check if server is running: `curl http://localhost:8000/health`
 2. Verify AUTH_TOKEN matches in both server and extension
 3. Check browser console for WebSocket errors
 
 ### Workflow not executing
+
 1. Check if extension is in connected list: `GET /api/extensions`
 2. Verify workflow structure is valid
 3. Check server logs for errors
 
 ### Connection drops frequently
+
 1. Check network stability
 2. Monitor server logs for errors
 3. Verify heartbeat mechanism is working
@@ -328,6 +428,7 @@ The server logs all activities including:
 ## Security Notes
 
 ⚠️ **This is a test server**. For production use:
+
 - Use HTTPS/WSS (secure WebSocket)
 - Implement proper authentication (OAuth, JWT)
 - Add rate limiting
@@ -339,4 +440,3 @@ The server logs all activities including:
 ## License
 
 MIT
-

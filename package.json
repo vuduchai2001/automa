@@ -8,10 +8,13 @@
   },
   "scripts": {
     "build": "node utils/build.js",
+    "build:headless": "cross-env EXTENSION_BUILD_MODE=headless node utils/build.js",
     "build:firefox": "cross-env BROWSER=firefox npm run build",
     "build:zip": "node utils/build-zip.js",
+    "build:zip:headless": "cross-env EXTENSION_BUILD_MODE=headless npm run build:zip",
     "build:prod": "npm run build:prod-chrome && npm run build:prod-firefox",
     "build:prod-chrome": "npm run build && npm run build:zip",
+    "build:prod-headless": "npm run build:headless && npm run build:zip:headless",
     "build:prod-firefox": "npm run build:firefox && cross-env BROWSER=firefox npm run build:zip",
     "dev": "node utils/webserver.js",
     "dev:firefox": "cross-env BROWSER=firefox npm run dev",

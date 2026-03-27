@@ -1,0 +1,1 @@
+After code changes, run the relevant verification for scope: at minimum lint, and when applicable build/tests/typecheck. Project guidance also asks to run lint, typecheck, tests, and static analysis after changes, but available package scripts explicitly include lint and build commands. Final reports should mention changed files, simplifications made, and remaining risks.

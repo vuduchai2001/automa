@@ -1,5 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 import { isAuthenticated } from '@/utils/auth';
+import { authTrace } from '@/utils/authTrace';
+import { isWorkerMode } from '@/utils/workerMode';
 import Welcome from './pages/Welcome.vue';
 import Login from './pages/Login.vue';
 import Packages from './pages/Packages.vue';
@@ -125,11 +127,27 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to, from, next) => {
+  const workerMode = await isWorkerMode().catch(() => false);
+  authTrace('router:before-each', {
+    to: to.fullPath,
+    from: from.fullPath,
+    workerMode,
+    requiresAuth: to.meta.requiresAuth !== false,
+  });
+
   // Routes that don't require auth
   if (to.meta.requiresAuth === false) {
     if (to.name === 'login') {
-      const authed = await isAuthenticated();
-      if (authed) {
+      const authed = workerMode ? true : await isAuthenticated();
+      authTrace('router:login-route-check', {
+        to: to.fullPath,
+        authed,
+        workerMode,
+      });
+      if (authed || workerMode) {
+        authTrace('router:redirect-workflows', {
+          reason: 'already-authenticated',
+        });
         next('/workflows');
         return;
       }
@@ -139,8 +157,20 @@ router.beforeEach(async (to, from, next) => {
   }
 
   // All other routes require auth
-  const authed = await isAuthenticated();
-  if (!authed) {
+  if (!workerMode) {
+    const authed = await isAuthenticated();
+    authTrace('router:protected-route-check', {
+      to: to.fullPath,
+      authed,
+    });
+    if (authed) {
+      next();
+      return;
+    }
+
+    authTrace('router:redirect-login', {
+      to: to.fullPath,
+    });
     next('/login');
     return;
   }

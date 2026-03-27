@@ -1,7 +1,10 @@
+/* eslint-disable no-console */
 import browser from 'webextension-polyfill';
 import { nanoid } from 'nanoid';
 import dbLogs from '@/db/logs';
 import { getAccessToken } from '@/utils/auth';
+import convertWorkflowData from '@/utils/convertWorkflowData';
+import { isWorkerModePayload, urlHasToken } from '@/utils/workerMode';
 import BackgroundWorkflowUtils from './BackgroundWorkflowUtils';
 import { getWebSocketConfig } from './WebSocketConfig';
 
@@ -37,6 +40,11 @@ class BackgroundWebSocket {
 
     // Installation ID (unique per installation)
     this.installationId = null;
+    this.profileId = null;
+    this.internalApiPort = 9091;
+    this.internalApiSecret = null;
+    this.workerMode = false;
+    this._skipNextReconnect = false;
   }
 
   /**
@@ -56,16 +64,12 @@ class BackgroundWebSocket {
     this._initializing = true;
 
     try {
-      // Check if user is authenticated before connecting
-      const { session } = await browser.storage.local.get('session');
-      if (!session?.access_token) {
-        console.info('[WebSocket] Not authenticated, skipping connection');
-        return;
-      }
+      const { wsConfig } = await this.bootstrapRuntimeConfig();
 
       // Clean up stale connection if any
       if (this.ws) {
         try {
+          this._skipNextReconnect = true;
           this.ws.close();
         } catch (e) {
           /* ignore */
@@ -94,25 +98,9 @@ class BackgroundWebSocket {
         this.installationId = installationId;
       }
 
-      // Read profileId (bridged from page localStorage)
-      const { profileId } = await browser.storage.local.get('profileId');
-      this.profileId = profileId || null;
-
-      // Read worker internal API config from storage (injected by worker)
-      const { internalApiPort, internalApiSecret } =
-        await browser.storage.local.get([
-          'internalApiPort',
-          'internalApiSecret',
-        ]);
-      this.internalApiPort = internalApiPort || 9091;
-      this.internalApiSecret = internalApiSecret || null;
-
-      // Get WebSocket config from storage
-      const { wsConfig } = await browser.storage.local.get('wsConfig');
-
       // Setup default config if not configured
       if (!wsConfig) {
-        await this.setupConfig();
+        await BackgroundWebSocket.setupConfig();
         const { wsConfig: newConfig } = await browser.storage.local.get(
           'wsConfig'
         );
@@ -147,7 +135,7 @@ class BackgroundWebSocket {
    * Save default config to storage (no recursive init call)
    * @returns {Promise<void>}
    */
-  async setupConfig() {
+  static async setupConfig() {
     const defaultConfig = getWebSocketConfig();
     await browser.storage.local.set({ wsConfig: defaultConfig });
   }
@@ -157,18 +145,18 @@ class BackgroundWebSocket {
    */
   async connect(url) {
     try {
-      // Check auth before connecting — don't connect if not logged in
-      const token = await getAccessToken();
-      if (!token) {
-        console.info('[WebSocket] No access token, skipping connection');
-        return;
-      }
-
-      // Only include profile_id if available — don't use hardcoded fallback
       let wsUrl = url;
-      wsUrl = `${url}?profile_id=${encodeURIComponent(
-        this.profileId || '069a1c44-811f-728b-8000-72457b4d79db'
-      )}`;
+
+      if (
+        this.profileId &&
+        !BackgroundWebSocket.hasQueryParam(wsUrl, 'profile_id')
+      ) {
+        wsUrl = BackgroundWebSocket.setUrlQueryParam(
+          wsUrl,
+          'profile_id',
+          this.profileId
+        );
+      }
 
       this.ws = new WebSocket(wsUrl);
 
@@ -183,7 +171,7 @@ class BackgroundWebSocket {
           console.error('[WebSocket] onMessage error:', e)
         );
       };
-      this.ws.onerror = (error) => this.onError(error);
+      this.ws.onerror = (error) => BackgroundWebSocket.onError(error);
       this.ws.onclose = () => this.onClose();
     } catch (error) {
       console.error('[WebSocket] Connection error:', error);
@@ -202,7 +190,9 @@ class BackgroundWebSocket {
       // rejects auth (closes connection), we'd loop forever.
 
       // Get fresh token for identify message
-      const token = await getAccessToken();
+      const token =
+        BackgroundWebSocket.getTokenFromUrl(this.ws?.url) ||
+        (await getAccessToken().catch(() => null));
 
       // Send identification message with auth token and profileId
       this.send({
@@ -212,7 +202,7 @@ class BackgroundWebSocket {
           installationId: this.installationId,
           profileId: this.profileId,
           version: browser.runtime.getManifest().version,
-          token,
+          token: token || null,
         },
       });
 
@@ -280,6 +270,7 @@ class BackgroundWebSocket {
    * Handle execute workflow request
    */
   async handleExecuteWorkflow(message) {
+    console.log('recive workflow', message);
     const { request_id: executionId, params } = message;
 
     const { workflow_config: workflow, options, params: inputs } = params || {};
@@ -302,17 +293,15 @@ class BackgroundWebSocket {
     }
 
     try {
-      // Validate workflow structure
-      if (!workflow.drawflow || !workflow.drawflow.nodes) {
+      const workflowData = convertWorkflowData({
+        ...workflow,
+        id: workflow.id || `ws-${executionId || nanoid()}`,
+        name: workflow.name || 'WebSocket Workflow',
+      });
+
+      if (!workflowData.drawflow?.nodes) {
         throw new Error('Invalid workflow structure');
       }
-
-      // Prepare workflow data
-      const workflowData = {
-        ...workflow,
-        id: workflow.id || `ws-${nanoid()}`,
-        name: workflow.name || 'WebSocket Workflow',
-      };
 
       // Parse parameters from trigger block
       const parsedVariables = BackgroundWebSocket.parseWorkflowParameters(
@@ -355,7 +344,7 @@ class BackgroundWebSocket {
       });
 
       // Execute workflow
-      BackgroundWorkflowUtils.instance.executeWorkflow(
+      await BackgroundWorkflowUtils.instance.executeWorkflow(
         workflowData,
         execOptions
       );
@@ -639,10 +628,14 @@ class BackgroundWebSocket {
     }
 
     try {
-      // Stop workflow
-      await BackgroundWorkflowUtils.instance.stopExecution(
-        execution.workflowId
-      );
+      const stateId =
+        execution.stateId ||
+        (await BackgroundWebSocket.findStateIdByExecution(execution));
+      if (!stateId) {
+        throw new Error('Execution state not found');
+      }
+
+      await BackgroundWorkflowUtils.instance.stopExecution(stateId);
 
       this.activeExecutions.delete(executionId);
 
@@ -675,14 +668,14 @@ class BackgroundWebSocket {
       type: 'status_response',
       requestId,
       data: {
-        connected: true,
+        connected: this.isConnected,
         activeExecutions: Array.from(this.activeExecutions.entries()).map(
           ([executionId, execution]) => ({
             executionId,
             ...execution,
           })
         ),
-        runningWorkflows: (workflowStates || []).length,
+        runningWorkflows: Object.values(workflowStates || {}).length,
       },
     });
   }
@@ -690,7 +683,7 @@ class BackgroundWebSocket {
   /**
    * Handle connection error
    */
-  onError(error) {
+  static onError(error) {
     console.error('[WebSocket] ❌ Error:', error);
     // Don't call onClose here — the WebSocket 'close' event will fire
     // automatically after 'error', so onClose will be called by the event.
@@ -715,6 +708,11 @@ class BackgroundWebSocket {
       // ignore badge errors
     }
 
+    if (this._skipNextReconnect) {
+      this._skipNextReconnect = false;
+      return;
+    }
+
     // Schedule reconnection
     this.scheduleReconnect();
   }
@@ -734,16 +732,9 @@ class BackgroundWebSocket {
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
 
-      // Check auth before reconnecting — stop if user logged out
-      const { session } = await browser.storage.local.get('session');
-      if (!session?.access_token) {
-        console.info('[WebSocket] Not authenticated, stopping reconnect');
-        return;
-      }
-
       this.reconnectAttempts += 1;
 
-      const { wsConfig } = await browser.storage.local.get('wsConfig');
+      const { wsConfig } = await this.bootstrapRuntimeConfig();
       if (wsConfig && wsConfig.enabled) {
         this.connect(wsConfig.url);
       }
@@ -791,6 +782,7 @@ class BackgroundWebSocket {
     }
 
     if (this.ws) {
+      this._skipNextReconnect = true;
       this.ws.close();
       this.ws = null;
     }
@@ -805,6 +797,221 @@ class BackgroundWebSocket {
     this.disconnect();
     this.reconnectAttempts = 0;
     await this.init();
+  }
+
+  static hasQueryParam(url, key) {
+    try {
+      return new URL(url).searchParams.has(key);
+    } catch (error) {
+      return new RegExp(`[?&]${key}=`).test(url);
+    }
+  }
+
+  static setUrlQueryParam(url, key, value) {
+    try {
+      const parsed = new URL(url);
+      parsed.searchParams.set(key, value);
+      return parsed.toString();
+    } catch (error) {
+      const separator = url.includes('?') ? '&' : '?';
+      return `${url}${separator}${key}=${encodeURIComponent(value)}`;
+    }
+  }
+
+  static getTokenFromUrl(url = '') {
+    if (!urlHasToken(url)) return null;
+
+    try {
+      return new URL(url).searchParams.get('token');
+    } catch (error) {
+      const match = url.match(/[?&]token=([^&]+)/);
+      return match ? decodeURIComponent(match[1]) : null;
+    }
+  }
+
+  static resolveWebSocketUrl(config = {}) {
+    const directUrl =
+      config.wsUrl || config.ws_url || config.wsConfig?.url || null;
+    const wsPort = Number(config.wsPort || config.ws_port || 0);
+
+    if (directUrl) {
+      const token =
+        config.token ||
+        config.wsToken ||
+        config.ws_token ||
+        BackgroundWebSocket.getTokenFromUrl(directUrl);
+
+      if (token && !urlHasToken(directUrl)) {
+        return BackgroundWebSocket.setUrlQueryParam(directUrl, 'token', token);
+      }
+
+      return directUrl;
+    }
+
+    if (!wsPort) return null;
+
+    const wsHost = config.wsHost || config.ws_host || '127.0.0.1';
+    const wsPath = config.wsPath || config.ws_path || '/ws';
+    let resolvedUrl = `ws://${wsHost}:${wsPort}${wsPath}`;
+
+    if (config.token || config.wsToken || config.ws_token) {
+      resolvedUrl = BackgroundWebSocket.setUrlQueryParam(
+        resolvedUrl,
+        'token',
+        config.token || config.wsToken || config.ws_token
+      );
+    }
+
+    return resolvedUrl;
+  }
+
+  static async getInitTabConfig() {
+    try {
+      const tabs = await browser.tabs.query({});
+      const initTab = [...tabs]
+        .reverse()
+        .find((tab) => tab.url && /\/automa-init(?:\?|$)/.test(tab.url));
+
+      if (!initTab?.url) return {};
+
+      const params = new URL(initTab.url).searchParams;
+
+      return {
+        profileId: params.get('profile_id') || params.get('profileId'),
+        wsPort: params.get('ws_port') || params.get('wsPort'),
+        wsHost: params.get('ws_host') || params.get('wsHost'),
+        wsUrl: params.get('ws_url') || params.get('wsUrl'),
+        token: params.get('token'),
+        internalApiPort:
+          params.get('internal_api_port') || params.get('internalApiPort'),
+        internalApiSecret:
+          params.get('internal_api_secret') || params.get('internalApiSecret'),
+      };
+    } catch (error) {
+      console.warn('[WebSocket] Failed to inspect init tab:', error);
+      return {};
+    }
+  }
+
+  async bootstrapRuntimeConfig() {
+    const stored = await browser.storage.local.get([
+      'profileId',
+      'profile_id',
+      'internalApiPort',
+      'internal_api_port',
+      'internalApiSecret',
+      'internal_api_secret',
+      'workerMode',
+      'wsConfig',
+      'wsUrl',
+      'ws_url',
+      'wsPort',
+      'ws_port',
+      'wsHost',
+      'ws_host',
+      'token',
+      'wsToken',
+      'ws_token',
+    ]);
+    const initTabConfig = await BackgroundWebSocket.getInitTabConfig();
+    const merged = { ...stored, ...initTabConfig };
+    const internalApiPort = Number(
+      merged.internalApiPort || merged.internal_api_port || 9091
+    );
+
+    this.profileId = merged.profileId || merged.profile_id || null;
+    this.internalApiPort = Number.isFinite(internalApiPort)
+      ? internalApiPort
+      : 9091;
+    this.internalApiSecret =
+      merged.internalApiSecret || merged.internal_api_secret || null;
+
+    const resolvedUrl = BackgroundWebSocket.resolveWebSocketUrl(merged);
+    const currentConfig = stored.wsConfig || null;
+    const nextWsConfig =
+      resolvedUrl || currentConfig?.url
+        ? {
+            // eslint-disable-next-line no-nested-ternary
+            enabled: resolvedUrl
+              ? true
+              : typeof currentConfig?.enabled === 'boolean'
+              ? currentConfig.enabled
+              : true,
+            url: resolvedUrl || currentConfig?.url || '',
+          }
+        : null;
+
+    this.workerMode = isWorkerModePayload({
+      ...merged,
+      profileId: this.profileId,
+      internalApiPort: this.internalApiPort,
+      wsConfig: nextWsConfig,
+    });
+
+    const updates = {};
+
+    if (this.profileId && stored.profileId !== this.profileId) {
+      updates.profileId = this.profileId;
+    }
+
+    if (
+      Number(stored.internalApiPort || stored.internal_api_port || 9091) !==
+      this.internalApiPort
+    ) {
+      updates.internalApiPort = this.internalApiPort;
+    }
+
+    if (
+      this.internalApiSecret &&
+      stored.internalApiSecret !== this.internalApiSecret
+    ) {
+      updates.internalApiSecret = this.internalApiSecret;
+    }
+
+    if (
+      nextWsConfig &&
+      (currentConfig?.url !== nextWsConfig.url ||
+        currentConfig?.enabled !== nextWsConfig.enabled)
+    ) {
+      updates.wsConfig = nextWsConfig;
+    }
+
+    if (stored.workerMode !== this.workerMode) {
+      updates.workerMode = this.workerMode;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await browser.storage.local.set(updates);
+    }
+
+    return {
+      wsConfig: updates.wsConfig || nextWsConfig,
+      workerMode: this.workerMode,
+    };
+  }
+
+  static async findStateIdByExecution(execution) {
+    const { workflowStates } = await browser.storage.local.get(
+      'workflowStates'
+    );
+    const states = Object.values(workflowStates || {});
+
+    const matchingState =
+      states.find(
+        (state) =>
+          state.workflowId === execution.workflowId &&
+          state.startedAt === execution.startedAt
+      ) ||
+      [...states]
+        .reverse()
+        .find((state) => state.workflowId === execution.workflowId);
+
+    if (matchingState?.id) {
+      execution.stateId = matchingState.id;
+      return matchingState.id;
+    }
+
+    return null;
   }
 }
 
